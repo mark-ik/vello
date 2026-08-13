@@ -223,6 +223,13 @@ struct OpenLayer {
 }
 
 impl<D> CommandRecorder<D> {
+    /// Whether any pushed layer is still open (i.e. the recording is not
+    /// settled). A settled recorder is a precondition for whole-scene
+    /// operations such as appending one recording onto another.
+    pub fn has_open_layers(&self) -> bool {
+        self.active_layer.is_some() || !self.layer_stack.is_empty()
+    }
+
     /// Create a new command recorder.
     pub fn new(width: u16, height: u16) -> Self {
         Self {
