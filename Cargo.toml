@@ -44,7 +44,7 @@ edition = "2024"
 # and with the MSRV in the `Unreleased` section of CHANGELOG.md.
 rust-version = "1.88"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/linebender/vello"
+repository = "https://github.com/mark-ik/vello"
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7
@@ -94,7 +94,7 @@ clippy.wildcard_dependencies = "warn"
 # END LINEBENDER LINT SET
 
 [workspace.dependencies]
-vello = { version = "0.10.0", path = "vello" }
+vello = { package = "netrender-vello", version = "0.10.0", path = "vello" }
 vello_encoding = { version = "0.10.0", path = "vello_encoding" }
 vello_shaders = { version = "0.10.0", path = "vello_shaders" }
 bytemuck = { version = "1.25.0", features = ["derive"] }

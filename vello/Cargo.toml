@@ -1,13 +1,16 @@
 [package]
-name = "vello"
+name = "netrender-vello"
 version.workspace = true
-description = "A GPU compute-centric 2D renderer."
+description = "Netrender's Vello 0.10 compatibility build for wgpu 30."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello"
 
 [package.metadata.docs.rs]
 all-features = true
