@@ -78,6 +78,7 @@
 
 extern crate alloc;
 
+mod append;
 pub(crate) mod blend;
 pub(crate) mod copy;
 pub(crate) mod filter;
@@ -95,6 +96,7 @@ mod text;
 pub(crate) mod draw;
 pub mod util;
 
+pub use append::AppendSceneError;
 #[cfg(feature = "webgl")]
 pub use render::{
     AtlasTextureInfo, WebGlAtlasWriter, WebGlRenderer, WebGlRendererInit, WebGlRendererInitStatus,
