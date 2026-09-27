@@ -1476,10 +1476,10 @@ dependencies = [
  "clap",
  "env_logger",
  "futures-intrusive",
+ "netrender-vello",
  "png",
  "pollster",
  "scenes",
- "vello",
 ]
 
 [[package]]
@@ -2500,6 +2500,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "netrender-vello"
+version = "0.10.0"
+dependencies = [
+ "bytemuck",
+ "futures-intrusive",
+ "log",
+ "peniko",
+ "png",
+ "skrifa 0.44.0",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "vello_encoding",
+ "vello_shaders",
+ "wgpu",
+ "wgpu-profiler",
 ]
 
 [[package]]
@@ -3576,10 +3594,10 @@ dependencies = [
  "clap",
  "getrandom",
  "image",
+ "netrender-vello",
  "rand",
  "roxmltree 0.20.0",
  "skrifa 0.44.0",
- "vello",
  "web-time",
 ]
 
@@ -3768,8 +3786,8 @@ name = "simple"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "netrender-vello",
  "pollster",
- "vello",
  "winit",
 ]
 
@@ -4432,24 +4450,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
-name = "vello"
-version = "0.10.0"
-dependencies = [
- "bytemuck",
- "futures-intrusive",
- "log",
- "peniko",
- "png",
- "skrifa 0.44.0",
- "static_assertions",
- "thiserror 2.0.18",
- "vello_encoding",
- "vello_shaders",
- "wgpu",
- "wgpu-profiler",
-]
-
-[[package]]
 name = "vello_bench"
 version = "0.0.0"
 dependencies = [
@@ -4630,12 +4630,12 @@ dependencies = [
  "anyhow",
  "futures-intrusive",
  "image",
+ "netrender-vello",
  "nv-flip",
  "oxipng",
  "png",
  "pollster",
  "scenes",
- "vello",
 ]
 
 [[package]]
@@ -5707,6 +5707,7 @@ dependencies = [
  "jni 0.21.1",
  "kurbo",
  "log",
+ "netrender-vello",
  "notify-debouncer-full",
  "pollster",
  "profiling",
@@ -5714,7 +5715,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing_android_trace",
- "vello",
  "vello_shaders",
  "wasm-bindgen",
  "wasm-bindgen-futures",
