@@ -18,6 +18,13 @@
 Vello is a 2D graphics rendering engine written in Rust, with a focus on GPU compute.
 It can draw large 2D scenes with interactive or near-interactive performance, using [`wgpu`] for GPU access.
 
+This fork is published as `netrender-vello` for wgpu 30. Version 0.10.1 makes
+`Renderer::render_to_texture` grow its dynamic GPU buffers from asynchronously
+read-back allocation counts, retaining the largest counts seen by that renderer.
+An overflowing frame may be blank; callers must render again after the readback
+completes. Recovery can take multiple frames and remains limited by the device's
+storage-buffer limits. CPU-shader mode skips this GPU readback.
+
 Quickstart to run an example program:
 
 ```shell

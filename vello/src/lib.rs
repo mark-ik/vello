@@ -320,18 +320,17 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 /// This is an assumption which is known to be limiting, and is planned to change.
 #[cfg(feature = "wgpu")]
 pub struct Renderer {
-    #[cfg_attr(
-        not(feature = "hot_reload"),
-        expect(
-            dead_code,
-            reason = "Options are only used to reinitialise on a hot reload"
-        )
-    )]
     options: RendererOptions,
     engine: WgpuEngine,
     resolver: Resolver,
     image_atlas: Option<recording::ImageProxy>,
     shaders: FullShaders,
+    /// The most elements each dynamic buffer has needed, from the GPU's bump
+    /// counters. Frames are sized to it, so a scene that outgrew the fixed
+    /// defaults can recover once its counters have been read back.
+    high_water: BumpAllocators,
+    /// The last frame's bump counters, on their way back from the GPU.
+    pending_bump: Option<PendingBump>,
     #[cfg(feature = "debug_layers")]
     debug: debug::DebugRenderer,
     #[cfg(feature = "wgpu-profiler")]
@@ -448,6 +447,8 @@ impl Renderer {
             resolver: Resolver::new(),
             image_atlas: None,
             shaders,
+            high_water: BumpAllocators::default(),
+            pending_bump: None,
             #[cfg(feature = "debug_layers")]
             debug,
             #[cfg(feature = "wgpu-profiler")]
@@ -479,12 +480,20 @@ impl Renderer {
         texture: &TextureView,
         params: &RenderParams,
     ) -> Result<()> {
-        let (recording, target) = render::render_full(
+        self.collect_bump(device);
+        let floor = self.floor(scene);
+        // One readback at a time: a frame recorded while one is out skips its own.
+        // CPU shaders keep the counters off the GPU, where no download reaches.
+        let robust = self.pending_bump.is_none() && !self.options.use_cpu;
+        let (recording, target, bump) = render::render_full(
             scene,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
             params,
+            &floor,
+            device.limits().max_storage_buffer_binding_size,
+            robust,
         );
         let external_resources = [ExternalResource::Image(
             *target.as_image().unwrap(),
@@ -499,6 +508,9 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             &mut self.profiler,
         )?;
+        if robust {
+            self.start_bump_readback(bump);
+        }
         // N.B. This is horrible; this integration of wgpu-profiler really needs some work...
         #[cfg(feature = "wgpu-profiler")]
         {
@@ -728,13 +740,16 @@ impl Renderer {
         // Currently this is always enabled when the `debug_layers` setting is enabled as the bump
         // counts are used for debug visualiation.
         let robust = cfg!(feature = "debug_layers");
-        let recording = render.render_encoding_coarse(
+        let floor = self.floor(scene);
+        let recording = render.render_encoding_coarse_sized(
             encoding,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
             params,
             robust,
+            Some(&floor),
+            device.limits().max_storage_buffer_binding_size,
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();
@@ -806,4 +821,93 @@ impl<'a> DebugDownloads<'a> {
         receiver.receive().await.expect("channel was closed")?;
         Ok(Self { lines })
     }
+}
+
+/// A frame's bump counters being read back without waiting for them.
+#[cfg(feature = "wgpu")]
+struct PendingBump {
+    buffer: recording::BufferProxy,
+    /// 0 while mapping, 1 once mapped, 2 if the map failed.
+    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[cfg(feature = "wgpu")]
+impl Renderer {
+    /// The elements each dynamic buffer must hold this frame: what earlier
+    /// frames needed, and the scene's own estimate where that is larger.
+    fn floor(&self, scene: &Scene) -> BumpAllocators {
+        let mut floor = self.high_water;
+        if let Some(estimate) = render::scene_estimate(scene) {
+            raise(&mut floor, &estimate, |count| count);
+        }
+        floor
+    }
+
+    /// Take the last frame's counters, if they have arrived, and raise the
+    /// high-water mark to what that frame needed with a quarter again of
+    /// headroom. A native device maps on poll; a browser maps from its own
+    /// event loop, so the counters may take a few frames to land.
+    fn collect_bump(&mut self, device: &Device) {
+        let Some(pending) = self.pending_bump.take() else {
+            return;
+        };
+        let _ = device.poll(wgpu::PollType::Poll);
+        match pending.state.load(std::sync::atomic::Ordering::Acquire) {
+            0 => {
+                self.pending_bump = Some(pending);
+                return;
+            }
+            1 => {
+                if let Some(buffer) = self.engine.get_download(pending.buffer) {
+                    let slice = buffer.slice(..);
+                    let needed = slice.get_mapped_range().ok().and_then(|range| {
+                        (range.len() >= size_of::<BumpAllocators>()).then(|| {
+                            bytemuck::pod_read_unaligned::<BumpAllocators>(
+                                &range[..size_of::<BumpAllocators>()],
+                            )
+                        })
+                    });
+                    buffer.unmap();
+                    if let Some(needed) = needed {
+                        raise(&mut self.high_water, &needed, |count| {
+                            count.saturating_add(count / 4)
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.engine.free_download(pending.buffer);
+    }
+
+    /// Start reading this frame's counters back, without waiting for them.
+    fn start_bump_readback(&mut self, buffer: recording::BufferProxy) {
+        let Some(download) = self.engine.get_download(buffer) else {
+            return;
+        };
+        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let flag = state.clone();
+        download
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                flag.store(
+                    if result.is_ok() { 1 } else { 2 },
+                    std::sync::atomic::Ordering::Release,
+                );
+            });
+        self.pending_bump = Some(PendingBump { buffer, state });
+    }
+}
+
+/// Raise each of `to`'s buffer counts to `from`'s, after `headroom`, where
+/// that is larger. The failure flags are not counts and are left alone.
+#[cfg(feature = "wgpu")]
+fn raise(to: &mut BumpAllocators, from: &BumpAllocators, headroom: impl Fn(u32) -> u32) {
+    to.binning = to.binning.max(headroom(from.binning));
+    to.ptcl = to.ptcl.max(headroom(from.ptcl));
+    to.tile = to.tile.max(headroom(from.tile));
+    to.seg_counts = to.seg_counts.max(headroom(from.seg_counts));
+    to.segments = to.segments.max(headroom(from.segments));
+    to.blend = to.blend.max(headroom(from.blend));
+    to.lines = to.lines.max(headroom(from.lines));
 }

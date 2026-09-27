@@ -1,6 +1,6 @@
 [package]
 name = "netrender-vello"
-version.workspace = true
+version = "0.10.1"
 description = "Netrender's Vello 0.10 compatibility build for wgpu 30."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]

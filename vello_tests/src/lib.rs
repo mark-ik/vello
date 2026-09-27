@@ -103,6 +103,26 @@ pub async fn get_scene_image(
     params: &TestParams,
     scene: &Scene,
 ) -> Result<ImageData, anyhow::Error> {
+    let mut images = get_scene_images(params, scene, 1).await?;
+    Ok(images.remove(0))
+}
+
+/// Render `scene` `frames` times on one renderer, reading each frame back, so a
+/// test can see what the renderer learns between frames.
+pub fn get_scene_images_sync(
+    params: &TestParams,
+    scene: &Scene,
+    frames: usize,
+) -> Result<Vec<ImageData>, anyhow::Error> {
+    pollster::block_on(get_scene_images(params, scene, frames))
+}
+
+/// [`get_scene_images_sync`], asynchronously.
+pub async fn get_scene_images(
+    params: &TestParams,
+    scene: &Scene,
+    frames: usize,
+) -> Result<Vec<ImageData>, anyhow::Error> {
     let mut context = RenderContext::new();
     let device_id = context
         .device(None)
@@ -145,9 +165,29 @@ pub async fn get_scene_image(
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer
-        .render_to_texture(device, queue, scene, &view, &render_params)
-        .or_else(|_| bail!("Got non-Send/Sync error from rendering"))?;
+    let mut images = Vec::with_capacity(frames);
+    for _ in 0..frames {
+        renderer
+            .render_to_texture(device, queue, scene, &view, &render_params)
+            .or_else(|_| bail!("Got non-Send/Sync error from rendering"))?;
+        images.push(read_target(device, queue, &target, width, height)?);
+    }
+    Ok(images)
+}
+
+/// Read an `Rgba8Unorm` target back into host memory.
+fn read_target(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<ImageData, anyhow::Error> {
+    let size = Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
     let padded_byte_width = (width * 4).next_multiple_of(256);
     let buffer_size = padded_byte_width as u64 * height as u64;
     let buffer = device.create_buffer(&BufferDescriptor {

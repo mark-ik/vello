@@ -10,7 +10,10 @@ use crate::{AaConfig, RenderParams};
 #[cfg(feature = "wgpu")]
 use crate::Scene;
 
-use vello_encoding::{Encoding, Resolver, WorkgroupSize, make_mask_lut, make_mask_lut_16};
+use vello_encoding::{
+    BufferSize, BumpAllocators, Encoding, Layout, RenderConfig, Resolver, WorkgroupSize,
+    make_mask_lut, make_mask_lut_16,
+};
 
 #[derive(Clone, Copy, Debug)]
 enum AtlasProxyAction {
@@ -80,35 +83,99 @@ impl CapturedBuffers {
     }
 }
 
+/// Record a full render of `scene`, its dynamic buffers holding at least
+/// `floor` elements each and at most `max_binding` bytes. With `robust`, the
+/// GPU's bump counters are downloaded, for the caller to size the next frame
+/// from what this one needed.
 #[cfg(feature = "wgpu")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the full render's inputs plus its sizing"
+)]
 pub(crate) fn render_full(
     scene: &Scene,
     resolver: &mut Resolver,
     shaders: &FullShaders,
     image_atlas: &mut Option<ImageProxy>,
     params: &RenderParams,
-) -> (Recording, ResourceProxy) {
-    render_encoding_full(scene.encoding(), resolver, shaders, image_atlas, params)
+    floor: &BumpAllocators,
+    max_binding: u64,
+    robust: bool,
+) -> (Recording, ResourceProxy, BufferProxy) {
+    render_encoding_full(
+        scene.encoding(),
+        resolver,
+        shaders,
+        image_atlas,
+        params,
+        Some(floor),
+        max_binding,
+        robust,
+    )
+}
+
+/// The scene's own estimate of the elements its dynamic buffers need, when
+/// the `bump_estimate` feature carries an estimator in every scene. Vello's
+/// estimator counts lines, segments and binning; it leaves tiles, the command
+/// list and blending to the GPU's own counts.
+#[cfg(feature = "wgpu")]
+pub(crate) fn scene_estimate(scene: &Scene) -> Option<BumpAllocators> {
+    #[cfg(feature = "bump_estimate")]
+    {
+        let memory = scene.bump_estimate(None);
+        Some(BumpAllocators {
+            failed: 0,
+            binning: memory.binning.len(),
+            ptcl: memory.ptcl.len(),
+            tile: memory.tile.len(),
+            seg_counts: memory.seg_counts.len(),
+            segments: memory.segments.len(),
+            blend: 0,
+            lines: memory.lines.len(),
+        })
+    }
+    #[cfg(not(feature = "bump_estimate"))]
+    {
+        let _ = scene;
+        None
+    }
 }
 
 #[cfg(feature = "wgpu")]
 /// Create a single recording with both coarse and fine render stages.
 ///
-/// This function is not recommended when the scene can be complex, as it does not
-/// implement robust dynamic memory.
+/// A scene that outgrows the dynamic buffers renders nothing, so a caller
+/// passes a `floor` it learned from earlier frames' counters (see
+/// [`render_full`]) and records with `robust` to learn from this one.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the full render's inputs plus its sizing"
+)]
 pub(crate) fn render_encoding_full(
     encoding: &Encoding,
     resolver: &mut Resolver,
     shaders: &FullShaders,
     image_atlas: &mut Option<ImageProxy>,
     params: &RenderParams,
-) -> (Recording, ResourceProxy) {
+    floor: Option<&BumpAllocators>,
+    max_binding: u64,
+    robust: bool,
+) -> (Recording, ResourceProxy, BufferProxy) {
     let mut render = Render::new();
-    let mut recording =
-        render.render_encoding_coarse(encoding, resolver, shaders, image_atlas, params, false);
+    let mut recording = render.render_encoding_coarse_sized(
+        encoding,
+        resolver,
+        shaders,
+        image_atlas,
+        params,
+        robust,
+        floor,
+        max_binding,
+    );
     let out_image = render.out_image();
+    let bump = render.bump_buf();
     render.record_fine(shaders, &mut recording);
-    (recording, out_image.into())
+    (recording, out_image.into(), bump)
 }
 
 impl Default for Render {
@@ -141,7 +208,38 @@ impl Render {
         params: &RenderParams,
         robust: bool,
     ) -> Recording {
-        use vello_encoding::RenderConfig;
+        self.render_encoding_coarse_sized(
+            encoding,
+            resolver,
+            shaders,
+            persistent_image_atlas,
+            params,
+            robust,
+            None,
+            u64::MAX,
+        )
+    }
+
+    /// [`render_encoding_coarse`](Self::render_encoding_coarse), with each
+    /// dynamic buffer raised to hold `floor`'s count of elements wherever it
+    /// exceeds the fixed default, up to `max_binding` bytes. A scene that
+    /// outgrows the buffers renders nothing and reports no error, so the floor
+    /// is what keeps a large scene drawn.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the coarse pass's inputs plus its sizing"
+    )]
+    pub fn render_encoding_coarse_sized(
+        &mut self,
+        encoding: &Encoding,
+        resolver: &mut Resolver,
+        shaders: &FullShaders,
+        persistent_image_atlas: &mut Option<ImageProxy>,
+        params: &RenderParams,
+        robust: bool,
+        floor: Option<&BumpAllocators>,
+        max_binding: u64,
+    ) -> Recording {
         let mut recording = Recording::default();
         let mut packed = vec![];
 
@@ -201,8 +299,11 @@ impl Render {
         for image in images.images {
             recording.write_image(image_atlas, image.1, image.2, image.0.clone());
         }
-        let cpu_config =
+        let mut cpu_config =
             RenderConfig::new(&layout, params.width, params.height, &params.base_color);
+        if let Some(floor) = floor {
+            grow_to_floor(&mut cpu_config, &layout, floor, max_binding);
+        }
         // HACK: The coarse workgroup counts is the number of active bins.
         if (cpu_config.workgroup_counts.coarse.0
             * cpu_config.workgroup_counts.coarse.1
@@ -650,4 +751,36 @@ impl Render {
     pub fn take_captured_buffers(&mut self) -> Option<CapturedBuffers> {
         self.captured_buffers.take()
     }
+}
+
+/// Raise each dynamically sized buffer to hold `floor` elements where that is
+/// more than the fixed default, never past `max_binding` bytes, and keep the
+/// bounds the shaders check in step.
+fn grow_to_floor(
+    config: &mut RenderConfig,
+    layout: &Layout,
+    floor: &BumpAllocators,
+    max_binding: u64,
+) {
+    fn fit<T: Copy>(current: BufferSize<T>, need: u32, max_binding: u64) -> BufferSize<T> {
+        let most = (max_binding / size_of::<T>().max(1) as u64).min(u64::from(u32::MAX)) as u32;
+        BufferSize::new(current.len().max(need.min(most)))
+    }
+    let sizes = &mut config.buffer_sizes;
+    sizes.lines = fit(sizes.lines, floor.lines, max_binding);
+    sizes.tiles = fit(sizes.tiles, floor.tile, max_binding);
+    sizes.seg_counts = fit(sizes.seg_counts, floor.seg_counts, max_binding);
+    sizes.segments = fit(sizes.segments, floor.segments, max_binding);
+    sizes.ptcl = fit(sizes.ptcl, floor.ptcl, max_binding);
+    sizes.blend_spill = fit(sizes.blend_spill, floor.blend, max_binding);
+    let bin_data = layout.bin_data_start.saturating_add(floor.binning);
+    sizes.bin_data = fit(sizes.bin_data, bin_data, max_binding);
+    let gpu = &mut config.gpu;
+    gpu.lines_size = sizes.lines.len();
+    gpu.tiles_size = sizes.tiles.len();
+    gpu.seg_counts_size = sizes.seg_counts.len();
+    gpu.segments_size = sizes.segments.len();
+    gpu.ptcl_size = sizes.ptcl.len();
+    gpu.blend_size = sizes.blend_spill.len();
+    gpu.binning_size = sizes.bin_data.len() - layout.bin_data_start;
 }
