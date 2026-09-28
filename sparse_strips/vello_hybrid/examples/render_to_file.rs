@@ -8,8 +8,9 @@
 
 use std::io::BufWriter;
 use vello_common::kurbo::{Affine, Stroke};
+use vello_common::peniko::ImageAlphaType;
 use vello_common::pico_svg::{Item, PicoSvg};
-use vello_common::pixmap::Pixmap;
+use vello_common::pixmap::{PixelMetadata, Pixmap};
 use vello_hybrid::{DimensionConstraints, Scene};
 
 /// Main entry point for the headless rendering example.
@@ -150,19 +151,19 @@ async fn run() {
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
     // Read back the pixel data
-    let mut img_data = Vec::with_capacity(usize::from(width) * usize::from(height));
+    let mut img_data = Vec::with_capacity(usize::from(width) * usize::from(height) * 4);
     for row in texture_copy_buffer
         .slice(..)
         .get_mapped_range()
         .unwrap()
         .chunks_exact(bytes_per_row as usize)
     {
-        img_data.extend_from_slice(bytemuck::cast_slice(&row[0..usize::from(width) * 4]));
+        img_data.extend_from_slice(&row[0..usize::from(width) * 4]);
     }
     texture_copy_buffer.unmap();
 
     // Create the pixmap from the image data
-    let pixmap = Pixmap::from_parts(img_data, width, height);
+    let pixmap = Pixmap::from_parts(img_data, width, height, PixelMetadata::default());
 
     // Write the pixmap to a file
     let file = std::fs::File::create(output_filename).unwrap();
@@ -171,7 +172,7 @@ async fn run() {
     png_encoder.set_color(png::ColorType::Rgba);
     let mut writer = png_encoder.write_header().unwrap();
     writer
-        .write_image_data(bytemuck::cast_slice(&pixmap.take_unpremultiplied()))
+        .write_image_data(&pixmap.take_rgba8(ImageAlphaType::Alpha))
         .unwrap();
 }
 

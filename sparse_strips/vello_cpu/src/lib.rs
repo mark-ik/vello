@@ -158,7 +158,7 @@ mod filter;
 mod record;
 #[cfg(feature = "text")]
 mod text;
-#[cfg(all(feature = "text", feature = "std", debug_assertions))]
+#[cfg(all(feature = "text", feature = "std", debug_assertions, not(doc)))]
 mod text_debug;
 mod util;
 
@@ -179,7 +179,7 @@ pub use text::{CpuGlyphRunBackend, GlyphRunBuilder};
 pub use vello_common::fearless_simd::Level;
 pub use vello_common::mask::Mask;
 pub use vello_common::paint::{Image, ImageSource, Paint, PaintType};
-pub use vello_common::pixmap::{Pixmap, PixmapMut};
+pub use vello_common::pixmap::{Pixels, Pixmap, PixmapMut};
 pub use vello_common::{color, kurbo, peniko};
 
 /// The selected rendering mode.

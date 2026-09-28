@@ -78,6 +78,7 @@
 
 extern crate alloc;
 
+mod append;
 pub(crate) mod blend;
 pub(crate) mod copy;
 pub(crate) mod filter;
@@ -86,7 +87,6 @@ mod paint;
 mod rect;
 mod render;
 mod resources;
-mod sampling;
 mod scene;
 mod schedule;
 mod target;
@@ -96,10 +96,11 @@ mod text;
 pub(crate) mod draw;
 pub mod util;
 
+pub use append::AppendSceneError;
 #[cfg(feature = "webgl")]
 pub use render::{
-    AtlasTextureInfo, WebGlAtlasWriter, WebGlRenderer, WebGlTextureBindings,
-    WebGlTextureWithDimensions,
+    AtlasTextureInfo, WebGlAtlasWriter, WebGlRenderer, WebGlRendererInit, WebGlRendererInitStatus,
+    WebGlTextureBindings, WebGlTextureWithDimensions,
 };
 #[cfg(feature = "wgpu")]
 pub use render::{AtlasWriter, RenderTargetConfig, Renderer, TextureBindings};
@@ -109,7 +110,6 @@ pub use render::{PROBE_ELEMENTS, Probe, ProbeFeature, ProbeResult, ProbeStatisti
 #[cfg(all(feature = "webgl", feature = "probe"))]
 pub use render::{WebGlPendingProbe, WebGlProbeError, WebGlProbeStatus};
 pub use resources::Resources;
-pub use sampling::ExternalTextureRect;
 pub use scene::{LayersConfig, MemorySettings, RenderSettings, Scene};
 #[cfg(feature = "text")]
 pub use text::{GlyphRunBuilder, HybridGlyphRunBackend};
@@ -117,7 +117,7 @@ pub use util::DimensionConstraints;
 pub use vello_common::TextureId;
 pub use vello_common::geometry::SizeU16;
 pub use vello_common::multi_atlas::{AllocationStrategy, AtlasConfig, AtlasId};
-pub use vello_common::pixmap::Pixmap;
+pub use vello_common::pixmap::{Pixels, Pixmap};
 
 use thiserror::Error;
 
@@ -130,6 +130,9 @@ pub enum RenderError {
     /// A draw referenced a [`TextureId`] that was not provided at render time.
     #[error("Missing texture binding for {0:?}")]
     MissingTextureBinding(TextureId),
+    /// A texture binding aliases the active render target.
+    #[error("Texture binding {0:?} aliases the active render target")]
+    TextureFeedbackLoop(TextureId),
     /// An intermediate texture allocation failed.
     #[error(transparent)]
     IntermediateTexture(#[from] IntermediateTextureError),
@@ -149,9 +152,9 @@ pub enum IntermediateTextureError {
         /// The requested allocation height.
         height: u32,
         /// The maximum intermediate texture width.
-        max_width: u32,
+        max_width: u16,
         /// The maximum intermediate texture height.
-        max_height: u32,
+        max_height: u16,
     },
     /// A render requires more intermediate textures than configured.
     #[error(

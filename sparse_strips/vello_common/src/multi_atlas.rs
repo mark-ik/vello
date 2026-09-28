@@ -21,9 +21,9 @@ pub struct Allocation {
     /// Opaque handle used for deallocation.
     pub id: AllocId,
     /// X coordinate of the top-left corner of the allocated rectangle.
-    pub x: u32,
+    pub x: u16,
     /// Y coordinate of the top-left corner of the allocated rectangle.
-    pub y: u32,
+    pub y: u16,
 }
 
 // ---------------------------------------------------------------------------
@@ -44,13 +44,13 @@ pub struct Atlas {
 
 impl Atlas {
     /// Create a new atlas with the given ID and size.
-    pub fn new(id: AtlasId, width: u32, height: u32) -> Self {
+    pub fn new(id: AtlasId, width: u16, height: u16) -> Self {
         Self {
             id,
-            allocator: AtlasAllocator::new(guillotiere::size2(width as i32, height as i32)),
+            allocator: AtlasAllocator::new(guillotiere::size2(i32::from(width), i32::from(height))),
             stats: AtlasUsageStats {
                 allocated_area: 0,
-                total_area: width * height,
+                total_area: u32::from(width) * u32::from(height),
                 allocated_count: 0,
             },
             allocation_counter: 0,
@@ -58,28 +58,29 @@ impl Atlas {
     }
 
     /// Try to allocate an image in this atlas.
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "coordinates are always non-negative for valid allocations"
-    )]
-    pub fn allocate(&mut self, width: u32, height: u32) -> Option<Allocation> {
+    pub fn allocate(&mut self, width: u16, height: u16) -> Option<Allocation> {
         let alloc = self
             .allocator
-            .allocate(guillotiere::size2(width as i32, height as i32))?;
-        self.stats.allocated_area += width * height;
+            .allocate(guillotiere::size2(i32::from(width), i32::from(height)))?;
+        self.stats.allocated_area += u32::from(width) * u32::from(height);
         self.stats.allocated_count += 1;
         self.allocation_counter += 1;
         Some(Allocation {
             id: alloc.id,
-            x: alloc.rectangle.min.x as u32,
-            y: alloc.rectangle.min.y as u32,
+            x: u16::try_from(alloc.rectangle.min.x)
+                .expect("guillotiere returned an out-of-range x coordinate"),
+            y: u16::try_from(alloc.rectangle.min.y)
+                .expect("guillotiere returned an out-of-range y coordinate"),
         })
     }
 
     /// Deallocate an image from this atlas.
-    pub fn deallocate(&mut self, alloc_id: AllocId, width: u32, height: u32) {
+    pub fn deallocate(&mut self, alloc_id: AllocId, width: u16, height: u16) {
         self.allocator.deallocate(alloc_id);
-        self.stats.allocated_area = self.stats.allocated_area.saturating_sub(width * height);
+        self.stats.allocated_area = self
+            .stats
+            .allocated_area
+            .saturating_sub(u32::from(width) * u32::from(height));
         self.stats.allocated_count = self.stats.allocated_count.saturating_sub(1);
     }
 
@@ -159,23 +160,12 @@ impl MultiAtlasManager {
     }
 
     /// Try to allocate space for an image with the given dimensions.
-    pub fn try_allocate(&mut self, width: u32, height: u32) -> Result<AtlasAllocation, AtlasError> {
-        self.try_allocate_excluding(width, height, None)
-    }
-
-    /// Try to allocate space for an image with the given dimensions,
-    /// optionally excluding a specific atlas.
-    pub fn try_allocate_excluding(
-        &mut self,
-        width: u32,
-        height: u32,
-        exclude_atlas_id: Option<AtlasId>,
-    ) -> Result<AtlasAllocation, AtlasError> {
+    pub fn try_allocate(&mut self, width: u16, height: u16) -> Result<AtlasAllocation, AtlasError> {
         // Check if the image is too large for any atlas
         if width > self.config.atlas_size.0 || height > self.config.atlas_size.1 {
             return Err(AtlasError::TextureTooLarge {
-                width,
-                height,
+                width: u32::from(width),
+                height: u32::from(height),
                 max_width: self.config.atlas_size.0,
                 max_height: self.config.atlas_size.1,
             });
@@ -183,20 +173,14 @@ impl MultiAtlasManager {
 
         // Try allocation based on strategy
         match self.config.allocation_strategy {
-            AllocationStrategy::FirstFit => {
-                self.allocate_first_fit(width, height, exclude_atlas_id)
-            }
-            AllocationStrategy::BestFit => self.allocate_best_fit(width, height, exclude_atlas_id),
-            AllocationStrategy::LeastUsed => {
-                self.allocate_least_used(width, height, exclude_atlas_id)
-            }
-            AllocationStrategy::RoundRobin => {
-                self.allocate_round_robin(width, height, exclude_atlas_id)
-            }
+            AllocationStrategy::FirstFit => self.allocate_first_fit(width, height),
+            AllocationStrategy::BestFit => self.allocate_best_fit(width, height),
+            AllocationStrategy::LeastUsed => self.allocate_least_used(width, height),
+            AllocationStrategy::RoundRobin => self.allocate_round_robin(width, height),
         }
     }
 
-    fn space_diagnostics(&self, width: u32, height: u32) -> AtlasSpaceDiagnostics {
+    fn space_diagnostics(&self, width: u16, height: u16) -> AtlasSpaceDiagnostics {
         let mut atlases = Vec::new();
 
         for atlas in &self.atlases {
@@ -206,8 +190,10 @@ impl MultiAtlasManager {
             let mut largest_free_height = 0;
             let mut largest_free_area = 0_u64;
             atlas.allocator.for_each_free_rectangle(|rect| {
-                let rect_width = rect.width() as u32;
-                let rect_height = rect.height() as u32;
+                let rect_width = u16::try_from(rect.width())
+                    .expect("guillotiere returned an out-of-range rectangle width");
+                let rect_height = u16::try_from(rect.height())
+                    .expect("guillotiere returned an out-of-range rectangle height");
                 let rect_area = u64::from(rect_width) * u64::from(rect_height);
                 free_area += rect_area;
                 free_rectangle_count += 1;
@@ -239,11 +225,11 @@ impl MultiAtlasManager {
         }
     }
 
-    fn no_space_available(&self, width: u32, height: u32) -> AtlasError {
+    fn no_space_available(&self, width: u16, height: u16) -> AtlasError {
         AtlasError::NoSpaceAvailable(self.space_diagnostics(width, height))
     }
 
-    fn atlas_limit_reached(&self, width: u32, height: u32) -> AtlasError {
+    fn atlas_limit_reached(&self, width: u16, height: u16) -> AtlasError {
         AtlasError::AtlasLimitReached {
             max_atlases: self.config.max_atlases,
             diagnostics: self.space_diagnostics(width, height),
@@ -253,15 +239,10 @@ impl MultiAtlasManager {
     /// Allocate using first-fit strategy: try atlases in order until one has space.
     fn allocate_first_fit(
         &mut self,
-        width: u32,
-        height: u32,
-        exclude_atlas_id: Option<AtlasId>,
+        width: u16,
+        height: u16,
     ) -> Result<AtlasAllocation, AtlasError> {
         for atlas in &mut self.atlases {
-            if Some(atlas.id) == exclude_atlas_id {
-                continue;
-            }
-
             if let Some(allocation) = atlas.allocate(width, height) {
                 return Ok(AtlasAllocation {
                     atlas_id: atlas.id,
@@ -291,23 +272,20 @@ impl MultiAtlasManager {
     /// can fit the image.
     fn allocate_best_fit(
         &mut self,
-        width: u32,
-        height: u32,
-        exclude_atlas_id: Option<AtlasId>,
+        width: u16,
+        height: u16,
     ) -> Result<AtlasAllocation, AtlasError> {
         let mut best_atlas_idx = None;
         let mut best_remaining_space = u32::MAX;
 
         // Find the atlas with the least remaining space that can fit the image
         for (idx, atlas) in self.atlases.iter().enumerate() {
-            if Some(atlas.id) == exclude_atlas_id {
-                continue;
-            }
-
             let stats = atlas.stats();
             let remaining_space = stats.total_area - stats.allocated_area;
 
-            if remaining_space >= width * height && remaining_space < best_remaining_space {
+            if remaining_space >= u32::from(width) * u32::from(height)
+                && remaining_space < best_remaining_space
+            {
                 best_remaining_space = remaining_space;
                 best_atlas_idx = Some(idx);
             }
@@ -324,25 +302,20 @@ impl MultiAtlasManager {
         }
 
         // Fallback to first-fit if best-fit didn't work
-        self.allocate_first_fit(width, height, exclude_atlas_id)
+        self.allocate_first_fit(width, height)
     }
 
     /// Allocate using least-used strategy: prefer the atlas with the lowest usage percentage.
     fn allocate_least_used(
         &mut self,
-        width: u32,
-        height: u32,
-        exclude_atlas_id: Option<AtlasId>,
+        width: u16,
+        height: u16,
     ) -> Result<AtlasAllocation, AtlasError> {
         let mut best_atlas_idx = None;
         let mut lowest_usage = f32::MAX;
 
         // Find the atlas with the lowest usage percentage
         for (idx, atlas) in self.atlases.iter().enumerate() {
-            if Some(atlas.id) == exclude_atlas_id {
-                continue;
-            }
-
             let usage = atlas.stats().usage_percentage();
             if usage < lowest_usage {
                 lowest_usage = usage;
@@ -361,18 +334,17 @@ impl MultiAtlasManager {
         }
 
         // Fallback to first-fit if least-used didn't work
-        self.allocate_first_fit(width, height, exclude_atlas_id)
+        self.allocate_first_fit(width, height)
     }
 
     /// Allocate using round-robin strategy: cycle through atlases using a round-robin counter.
     fn allocate_round_robin(
         &mut self,
-        width: u32,
-        height: u32,
-        exclude_atlas_id: Option<AtlasId>,
+        width: u16,
+        height: u16,
     ) -> Result<AtlasAllocation, AtlasError> {
         if self.atlases.is_empty() {
-            return self.allocate_first_fit(width, height, exclude_atlas_id);
+            return self.allocate_first_fit(width, height);
         }
 
         let start_idx = self.round_robin_counter % self.atlases.len();
@@ -380,10 +352,6 @@ impl MultiAtlasManager {
         // Try starting from the round-robin position
         for i in 0..self.atlases.len() {
             let idx = (start_idx + i) % self.atlases.len();
-
-            if Some(self.atlases[idx].id) == exclude_atlas_id {
-                continue;
-            }
 
             if let Some(allocation) = self.atlases[idx].allocate(width, height) {
                 let atlas_id = self.atlases[idx].id;
@@ -418,8 +386,8 @@ impl MultiAtlasManager {
         &mut self,
         atlas_id: AtlasId,
         alloc_id: AllocId,
-        width: u32,
-        height: u32,
+        width: u16,
+        height: u16,
     ) -> Result<(), AtlasError> {
         // Since atlases only grow (never deallocate) and id is the index into the atlases vec,
         // we can do a lookup instead of a linear search
@@ -479,9 +447,9 @@ pub enum AtlasError {
         /// The height of the requested texture.
         height: u32,
         /// The maximum texture width supported by the atlas.
-        max_width: u32,
+        max_width: u16,
         /// The maximum texture height supported by the atlas.
-        max_height: u32,
+        max_height: u16,
     },
     /// The specified atlas was not found.
     #[error("Atlas with Id {0:?} not found")]
@@ -496,13 +464,13 @@ pub enum AtlasSpaceDiagnostics {
     /// Details about the requested allocation and available atlas space.
     Allocation {
         /// The requested allocation width.
-        width: u32,
+        width: u16,
         /// The requested allocation height.
-        height: u32,
+        height: u16,
         /// The width shared by all atlas layers.
-        atlas_width: u32,
+        atlas_width: u16,
         /// The height shared by all atlas layers.
-        atlas_height: u32,
+        atlas_height: u16,
         /// The configured maximum number of atlas layers.
         max_atlases: usize,
         /// Per-layer details for each atlas considered for the allocation.
@@ -575,9 +543,9 @@ pub struct AtlasLayerDiagnostics {
     /// The number of disjoint free rectangles in the layer.
     pub free_rectangle_count: usize,
     /// The width of the largest free rectangle by area.
-    pub largest_free_width: u32,
+    pub largest_free_width: u16,
     /// The height of the largest free rectangle by area.
-    pub largest_free_height: u32,
+    pub largest_free_height: u16,
 }
 
 impl AtlasLayerDiagnostics {
@@ -622,7 +590,7 @@ impl core::fmt::Debug for AtlasLayerDiagnostics {
     }
 }
 
-struct Dimensions(u32, u32);
+struct Dimensions(u16, u16);
 
 impl core::fmt::Debug for Dimensions {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -699,9 +667,8 @@ pub struct AtlasConfig {
     pub initial_atlas_count: usize,
     /// Maximum number of atlases to create.
     pub max_atlases: usize,
-    // TODO: Make those u16 instead?
     /// Size of each atlas texture.
-    pub atlas_size: (u32, u32),
+    pub atlas_size: (u16, u16),
     /// Whether to automatically create new atlases when needed.
     pub auto_grow: bool,
     /// Strategy for allocating images across atlases.
@@ -1048,53 +1015,5 @@ mod tests {
 
         let allocation2 = manager.try_allocate(256, 256).unwrap();
         assert_eq!(allocation2.atlas_id.as_u32(), 2);
-    }
-
-    fn test_allocate_excluding_with_strategy(strategy: AllocationStrategy) {
-        let mut manager = MultiAtlasManager::new(AtlasConfig {
-            initial_atlas_count: 3,
-            max_atlases: 3,
-            atlas_size: (256, 256),
-            allocation_strategy: strategy,
-            auto_grow: false,
-        });
-
-        let allocation0 = manager.try_allocate(100, 100).unwrap();
-        let first_atlas = allocation0.atlas_id;
-        let allocation1 = manager
-            .try_allocate_excluding(256, 256, Some(first_atlas))
-            .unwrap();
-        assert_ne!(allocation1.atlas_id, first_atlas);
-
-        let second_atlas = allocation1.atlas_id;
-        let allocation2 = manager
-            .try_allocate_excluding(100, 100, Some(second_atlas))
-            .unwrap();
-        assert_ne!(allocation2.atlas_id, second_atlas);
-
-        let allocation3 = manager
-            .try_allocate_excluding(100, 100, Some(first_atlas))
-            .unwrap();
-        assert_ne!(allocation3.atlas_id, first_atlas);
-    }
-
-    #[test]
-    fn test_allocate_excluding_first_fit() {
-        test_allocate_excluding_with_strategy(AllocationStrategy::FirstFit);
-    }
-
-    #[test]
-    fn test_allocate_excluding_best_fit() {
-        test_allocate_excluding_with_strategy(AllocationStrategy::BestFit);
-    }
-
-    #[test]
-    fn test_allocate_excluding_least_used() {
-        test_allocate_excluding_with_strategy(AllocationStrategy::LeastUsed);
-    }
-
-    #[test]
-    fn test_allocate_excluding_round_robin() {
-        test_allocate_excluding_with_strategy(AllocationStrategy::RoundRobin);
     }
 }

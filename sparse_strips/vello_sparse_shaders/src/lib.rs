@@ -7,6 +7,8 @@
 mod compile;
 #[cfg(feature = "glsl")]
 mod lint;
+#[cfg(any(test, feature = "glsl"))]
+mod minify;
 #[cfg(feature = "glsl")]
 mod types;
 

@@ -42,7 +42,7 @@ version = "0.10.0"
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files
 # and with the MSRV in the `Unreleased` section of CHANGELOG.md.
-rust-version = "1.88"
+rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/mark-ik/vello"
 
@@ -118,7 +118,7 @@ rayon = { version = "1.12.0" }
 thread_local = "1.1.9"
 crossbeam-channel = "0.5.15"
 ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
-fearless_simd = { version = "0.4.0", default-features = false }
+fearless_simd = { version = "0.7.0", default-features = false }
 
 # Unlike the other crates, please do not update these before a release
 # unless absolutely necessary.
@@ -130,7 +130,7 @@ web-sys = "0.3.92"
 
 vello_common = { version = "0.2.0", path = "sparse_strips/vello_common", default-features = false }
 vello_cpu = { version = "0.2.0", path = "sparse_strips/vello_cpu" }
-vello_hybrid = { version = "0.2.0", path = "sparse_strips/vello_hybrid" }
+vello_hybrid = { version = "0.2.0", path = "sparse_strips/vello_hybrid", default-features = false }
 vello_sparse_shaders = { version = "0.2.0", path = "sparse_strips/vello_sparse_shaders" }
 glifo = { version = "0.3.0", path = "glifo", default-features = false }
 vello_example_scenes = { path = "sparse_strips/vello_example_scenes" }

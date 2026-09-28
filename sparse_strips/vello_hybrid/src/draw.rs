@@ -4,13 +4,15 @@
 //! Draw construction for strip render passes.
 
 use crate::GpuStrip;
-use crate::paint::{COLOR_SOURCE_LAYER, COLOR_SOURCE_SHIFT, PaintResolver};
+use crate::paint::{
+    COLOR_SOURCE_LAYER, COLOR_SOURCE_SHIFT, EXTERNAL_TEXTURE_SLOT_SHIFT, PaintResolver,
+    TextureSourceId,
+};
 use crate::rect::{RectPart, split_rect};
 use crate::scene::{RecordedDraw, RecordedPath};
 use crate::target::{DrawTarget, LayerTextureRegion};
 use crate::util::{Ranges, VecExt, pack_opacity, pack_u16_pair};
 use alloc::vec::Vec;
-use vello_common::TextureId;
 use vello_common::geometry::RectU16;
 use vello_common::kurbo::Rect;
 use vello_common::paint::Paint;
@@ -25,7 +27,7 @@ use vello_common::util::Clear;
 pub(crate) struct Draw {
     /// Ranges selecting this draw's strips from [`DrawBuffers::strips`].
     pub(crate) strip_ranges: Ranges,
-    /// Runs that require an externally supplied texture binding.
+    /// Runs that require external texture bindings.
     pub(crate) external_texture_runs: Vec<ExternalTextureRun>,
     /// Whether any strip in this draw samples a child layer.
     pub(crate) has_child_layer: bool,
@@ -36,14 +38,16 @@ impl Draw {
     fn push(
         &mut self,
         strips: &mut Vec<GpuStrip>,
-        gpu_strip: GpuStrip,
-        external_texture_id: Option<TextureId>,
+        mut gpu_strip: GpuStrip,
+        texture_source: Option<TextureSourceId>,
     ) {
-        push_external_texture_run(
+        if let Some(slot) = assign_external_texture_slot(
             &mut self.external_texture_runs,
             self.strip_ranges.len(),
-            external_texture_id,
-        );
+            texture_source,
+        ) {
+            gpu_strip.paint_and_rect_flag |= u32::from(slot) << EXTERNAL_TEXTURE_SLOT_SHIFT;
+        }
 
         strips.push_ranged(&mut self.strip_ranges, gpu_strip);
     }
@@ -65,12 +69,14 @@ pub(crate) struct OpaqueDraw {
 }
 
 impl OpaqueDraw {
-    fn push(&mut self, strip: GpuStrip, external_texture_id: Option<TextureId>) {
-        push_external_texture_run(
+    fn push(&mut self, mut strip: GpuStrip, texture_source: Option<TextureSourceId>) {
+        if let Some(slot) = assign_external_texture_slot(
             &mut self.external_texture_runs,
             self.strips.len(),
-            external_texture_id,
-        );
+            texture_source,
+        ) {
+            strip.paint_and_rect_flag |= u32::from(slot) << EXTERNAL_TEXTURE_SLOT_SHIFT;
+        }
 
         self.strips.push(strip);
     }
@@ -150,12 +156,12 @@ impl<'a, T: DrawTarget> DrawBuilder<'a, T> {
         }
     }
 
-    fn push_opaque(&mut self, strip: GpuStrip, external_texture_id: Option<TextureId>) -> bool {
+    fn push_opaque(&mut self, strip: GpuStrip, texture_source: Option<TextureSourceId>) -> bool {
         if !self.state.use_depth_buffer || !self.state.target.enable_depth() {
             return false;
         }
 
-        self.opaque.push(strip, external_texture_id);
+        self.opaque.push(strip, texture_source);
         true
     }
 
@@ -196,7 +202,7 @@ impl<'a, T: DrawTarget> DrawBuilder<'a, T> {
 
                 builder
                     .draw
-                    .push(builder.strips, strip, paint.external_texture_id);
+                    .push(builder.strips, strip, paint.texture_source);
             },
             |builder, segment| {
                 let shifted = segment.shift(geometry_shift);
@@ -210,10 +216,10 @@ impl<'a, T: DrawTarget> DrawBuilder<'a, T> {
                     depth_index,
                 );
 
-                if !paint.opaque || !builder.push_opaque(strip, paint.external_texture_id) {
+                if !paint.opaque || !builder.push_opaque(strip, paint.texture_source) {
                     builder
                         .draw
-                        .push(builder.strips, strip, paint.external_texture_id);
+                        .push(builder.strips, strip, paint.texture_source);
                 }
             },
         );
@@ -255,12 +261,8 @@ impl<'a, T: DrawTarget> DrawBuilder<'a, T> {
                 depth_index,
             );
 
-            if !(paint.opaque
-                && part.frac == 0
-                && self.push_opaque(strip, paint.external_texture_id))
-            {
-                self.draw
-                    .push(self.strips, strip, paint.external_texture_id);
+            if !(paint.opaque && part.frac == 0 && self.push_opaque(strip, paint.texture_source)) {
+                self.draw.push(self.strips, strip, paint.texture_source);
             }
         }
     }
@@ -444,32 +446,81 @@ impl LayerTextureRegion {
     }
 }
 
-/// Specifies a run of strips that can be drawn with the same external texture binding.
+/// Number of external textures that can be sampled by one strip draw.
+pub(crate) const EXTERNAL_TEXTURE_SLOT_COUNT: usize = 4;
+
+/// External texture bindings for one strip draw.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ExternalTextureBindings {
+    texture_sources: [Option<TextureSourceId>; EXTERNAL_TEXTURE_SLOT_COUNT],
+}
+
+impl ExternalTextureBindings {
+    pub(crate) const EMPTY: Self = Self {
+        texture_sources: [None; EXTERNAL_TEXTURE_SLOT_COUNT],
+    };
+
+    /// Return the existing slot for `texture_source`, or insert it into the first empty slot.
+    /// Returns `None` when all four slots are occupied by other textures.
+    #[inline]
+    fn get_or_insert(&mut self, texture_source: TextureSourceId) -> Option<u8> {
+        // This iteration order assumes slots are assigned without leaving "holes" in-between,
+        // i.e. if we hit `None`, any later slot is also guaranteed to be `None`.
+        for (slot, candidate) in self.texture_sources.iter_mut().enumerate() {
+            match *candidate {
+                Some(source) if source == texture_source => {
+                    return Some(u8::try_from(slot).unwrap());
+                }
+                None => {
+                    *candidate = Some(texture_source);
+                    return Some(u8::try_from(slot).unwrap());
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    #[inline]
+    pub(crate) fn as_array(self) -> [Option<TextureSourceId>; EXTERNAL_TEXTURE_SLOT_COUNT] {
+        self.texture_sources
+    }
+}
+
+/// Specifies a run of strips that can be drawn with the same external texture bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExternalTextureRun {
-    /// External texture bound for the run.
-    pub(crate) texture_id: TextureId,
+    /// External textures bound for the run.
+    pub(crate) bindings: ExternalTextureBindings,
     /// Start index of the strip range for this run. The end is implicitly the start of the next
     /// run, or, for the last run, the total number of strips in the pass.
     pub(crate) strips_start: usize,
 }
 
-fn push_external_texture_run(
+fn assign_external_texture_slot(
     runs: &mut Vec<ExternalTextureRun>,
     strips_len: usize,
-    external_texture_id: Option<TextureId>,
-) {
-    let Some(texture_id) = external_texture_id else {
-        return;
-    };
-    if runs.last().is_some_and(|run| run.texture_id == texture_id) {
-        return;
+    texture_source: Option<TextureSourceId>,
+) -> Option<u8> {
+    let texture_source = texture_source?;
+
+    if let Some(slot) = runs
+        .last_mut()
+        .and_then(|run| run.bindings.get_or_insert(texture_source))
+    {
+        return Some(slot);
     }
 
+    let mut bindings = ExternalTextureBindings::EMPTY;
+    let slot = bindings.get_or_insert(texture_source).unwrap();
+    let strips_start = if runs.is_empty() { 0 } else { strips_len };
     runs.push(ExternalTextureRun {
-        texture_id,
-        strips_start: if runs.is_empty() { 0 } else { strips_len },
+        bindings,
+        strips_start,
     });
+
+    Some(slot)
 }
 
 /// Assigns monotonically increasing depth values to opaque strips.
@@ -526,7 +577,7 @@ impl StripAlphaFillSegmentExt for StripAlphaFillSegment {
 mod tests {
     use super::{Draw, DrawBuffers, DrawBuilder, DrawState, ExternalTextureRun, OpaqueDraw};
     use crate::GpuStrip;
-    use crate::paint::PaintResolver;
+    use crate::paint::{EXTERNAL_TEXTURE_SLOT_SHIFT, PaintResolver, TextureSourceId};
     use crate::scene::{RecordedDraw, RecordedRect};
     use crate::target::{
         DrawTarget, LayerTextureId, LayerTextureRegion, RootTarget, TextureParity, TextureRegion,
@@ -534,9 +585,11 @@ mod tests {
     use crate::util::VecExt;
     use alloc::vec::Vec;
     use vello_common::TextureId;
-    use vello_common::encode::{EncodedExternalTexture, EncodedImage, EncodedPaint};
+    use vello_common::encode::{EncodedImage, EncodedPaint};
     use vello_common::geometry::RectU16;
+    use vello_common::image_cache::ImageCache;
     use vello_common::kurbo::{Affine, Rect, Vec2};
+    use vello_common::multi_atlas::{AtlasConfig, AtlasId};
     use vello_common::paint::{ImageId, ImageSource, IndexedPaint, Paint, PremulColor};
     use vello_common::peniko::color::palette::css::BLUE;
     use vello_common::peniko::{Extend, ImageQuality, ImageSampler};
@@ -616,16 +669,30 @@ mod tests {
         draw.strips().iter().map(|strip| strip.x).collect()
     }
 
-    fn run_starts(runs: &[ExternalTextureRun]) -> Vec<(TextureId, usize)> {
+    fn external_texture_slots(draw: &OpaqueDraw) -> Vec<u32> {
+        draw.strips()
+            .iter()
+            .map(|strip| (strip.paint_and_rect_flag >> EXTERNAL_TEXTURE_SLOT_SHIFT) & 0x3)
+            .collect()
+    }
+
+    fn texture_ids<const N: usize>() -> [TextureId; N] {
+        core::array::from_fn(|index| TextureId(index as u64))
+    }
+
+    fn external_sources<const N: usize>() -> [TextureSourceId; N] {
+        texture_ids().map(TextureSourceId::External)
+    }
+
+    fn run_states(runs: &[ExternalTextureRun]) -> Vec<([Option<TextureSourceId>; 4], usize)> {
         runs.iter()
-            .map(|run| (run.texture_id, run.strips_start))
+            .map(|run| (run.bindings.as_array(), run.strips_start))
             .collect()
     }
 
     fn external(texture_id: TextureId) -> EncodedPaint {
-        EncodedPaint::ExternalTexture(EncodedExternalTexture {
-            texture_id,
-            source_region: RectU16::new(0, 0, 8, 8),
+        EncodedPaint::Image(EncodedImage {
+            source: ImageSource::external_texture(texture_id, RectU16::new(0, 0, 8, 8), true),
             sampler: ImageSampler {
                 x_extend: Extend::Pad,
                 y_extend: Extend::Pad,
@@ -634,13 +701,15 @@ mod tests {
             },
             may_have_transparency: true,
             transform: Affine::IDENTITY,
+            x_advance: Vec2::new(1.0, 0.0),
+            y_advance: Vec2::new(0.0, 1.0),
             tint: None,
         })
     }
 
-    fn atlas_image() -> EncodedPaint {
+    fn atlas_image(image_id: ImageId) -> EncodedPaint {
         EncodedPaint::Image(EncodedImage {
-            source: ImageSource::opaque_id(ImageId::new(0)),
+            source: ImageSource::opaque_id(image_id),
             sampler: ImageSampler {
                 x_extend: Extend::Pad,
                 y_extend: Extend::Pad,
@@ -667,8 +736,7 @@ mod tests {
 
     #[test]
     fn texture_runs() {
-        let texture_a = TextureId(10);
-        let texture_b = TextureId(20);
+        let [texture_a, texture_b] = texture_ids();
         let encoded = [external(texture_a), external(texture_b)];
         let offsets = [0, 0];
         let resolver = PaintResolver::new(&encoded, &offsets);
@@ -685,14 +753,73 @@ mod tests {
         }
 
         assert_eq!(
-            run_starts(&draw.external_texture_runs),
-            [(texture_a, 0), (texture_b, 2), (texture_a, 4)]
+            run_states(&draw.external_texture_runs),
+            [(
+                [
+                    Some(TextureSourceId::External(texture_a)),
+                    Some(TextureSourceId::External(texture_b)),
+                    None,
+                    None,
+                ],
+                0,
+            )]
+        );
+    }
+
+    #[test]
+    fn fifth_external_texture_starts_a_fresh_run() {
+        let textures: [TextureId; 5] = texture_ids();
+        let encoded = textures.map(external);
+        let offsets = [0; 5];
+        let resolver = PaintResolver::new(&encoded, &offsets);
+        let mut case = DrawCase::new(RootTarget::UserSurface, RectU16::new(0, 0, 32, 8));
+        let mut draw = Draw::default();
+
+        for (draw_index, paint_index) in [0, 1, 2, 3, 4, 0].into_iter().enumerate() {
+            case.rect(
+                &mut draw,
+                rect(draw_index as f64 * 4.0),
+                indexed(paint_index),
+                resolver,
+            );
+        }
+
+        assert_eq!(
+            run_states(&draw.external_texture_runs),
+            [
+                (
+                    [
+                        Some(TextureSourceId::External(textures[0])),
+                        Some(TextureSourceId::External(textures[1])),
+                        Some(TextureSourceId::External(textures[2])),
+                        Some(TextureSourceId::External(textures[3]))
+                    ],
+                    0
+                ),
+                (
+                    [
+                        Some(TextureSourceId::External(textures[4])),
+                        Some(TextureSourceId::External(textures[0])),
+                        None,
+                        None,
+                    ],
+                    4,
+                ),
+            ]
+        );
+        assert_eq!(
+            case.buffers
+                .strips
+                .iter()
+                .map(|strip| (strip.paint_and_rect_flag >> EXTERNAL_TEXTURE_SLOT_SHIFT) & 0x3)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3, 0, 1]
         );
     }
 
     #[test]
     fn texture_runs_coalesce_distinct_paints_for_same_texture() {
-        let texture = TextureId(10);
+        let [texture] = texture_ids();
         let encoded = [external(texture), external(texture)];
         let resolver = PaintResolver::new(&encoded, &[0, 3]);
         let mut case = DrawCase::new(RootTarget::UserSurface, RectU16::new(0, 0, 8, 8));
@@ -701,14 +828,22 @@ mod tests {
         case.rect(&mut draw, rect(0.0), indexed(0), resolver);
         case.rect(&mut draw, rect(4.0), indexed(1), resolver);
 
-        assert_eq!(run_starts(&draw.external_texture_runs), [(texture, 0)]);
+        assert_eq!(
+            run_states(&draw.external_texture_runs),
+            [(
+                [Some(TextureSourceId::External(texture)), None, None, None],
+                0,
+            )]
+        );
     }
 
     #[test]
-    fn texture_runs_collapse_across_atlas_images() {
-        let texture = TextureId(10);
-        let encoded = [external(texture), atlas_image()];
-        let resolver = PaintResolver::new(&encoded, &[0, 0]);
+    fn texture_runs_include_atlas_images() {
+        let [texture] = texture_ids();
+        let mut image_cache = ImageCache::new_with_config(AtlasConfig::default());
+        let image_id = image_cache.allocate(1, 1, 0).unwrap();
+        let encoded = [external(texture), atlas_image(image_id)];
+        let resolver = PaintResolver::new(&encoded, &[0, 0]).with_image_cache(&image_cache);
         let mut case = DrawCase::new(RootTarget::UserSurface, RectU16::new(0, 0, 16, 8));
         let mut draw = Draw::default();
 
@@ -717,63 +852,114 @@ mod tests {
         }
 
         assert_eq!(draw.strip_ranges.len(), 3);
-        // Images in the atlas are handled separately from external textures, so
-        // it's fine to collapse them.
-        assert_eq!(run_starts(&draw.external_texture_runs), [(texture, 0)]);
+        assert_eq!(
+            draw.external_texture_runs[0].bindings.as_array(),
+            [
+                Some(TextureSourceId::External(texture)),
+                Some(TextureSourceId::Atlas(AtlasId::new(0))),
+                None,
+                None,
+            ]
+        );
+        assert_eq!(draw.external_texture_runs[0].strips_start, 0);
     }
 
     #[test]
     fn opaque_reverse_rebases_texture_runs() {
-        let texture_a = TextureId(10);
-        let texture_b = TextureId(20);
-        let texture_c = TextureId(30);
+        let textures: [TextureSourceId; 8] = external_sources();
         let mut draw = OpaqueDraw::default();
 
         for (x, texture_id) in [
             (0, None),
-            (1, Some(texture_a)),
-            (2, Some(texture_a)),
+            (1, Some(textures[0])),
+            (2, Some(textures[0])),
             (3, None),
             (4, None),
             (5, None),
-            (6, Some(texture_b)),
-            (7, Some(texture_b)),
-            (8, Some(texture_c)),
+            (6, Some(textures[1])),
+            (7, Some(textures[1])),
+            (8, Some(textures[2])),
             (9, None),
-            (10, Some(texture_c)),
+            (10, Some(textures[2])),
             (11, None),
             (12, None),
-            (13, Some(texture_a)),
+            (13, Some(textures[0])),
             (14, None),
-            (15, Some(texture_b)),
+            (15, Some(textures[1])),
+            (16, Some(textures[3])),
+            (17, None),
+            (18, Some(textures[0])),
+            (19, Some(textures[4])),
+            (20, None),
+            (21, Some(textures[4])),
+            (22, Some(textures[0])),
+            (23, Some(textures[5])),
+            (24, Some(textures[5])),
+            (25, None),
+            (26, Some(textures[6])),
+            (27, None),
+            (28, Some(textures[7])),
+            (29, Some(textures[7])),
+            (30, Some(textures[1])),
+            (31, None),
         ] {
             draw.push(gpu_strip(x), texture_id);
         }
         assert_eq!(
-            run_starts(draw.external_texture_runs()),
+            run_states(draw.external_texture_runs()),
             [
-                (texture_a, 0),
-                (texture_b, 6),
-                (texture_c, 8),
-                (texture_a, 13),
-                (texture_b, 15),
+                (
+                    [
+                        Some(textures[0]),
+                        Some(textures[1]),
+                        Some(textures[2]),
+                        Some(textures[3]),
+                    ],
+                    0,
+                ),
+                (
+                    [
+                        Some(textures[4]),
+                        Some(textures[0]),
+                        Some(textures[5]),
+                        Some(textures[6]),
+                    ],
+                    19,
+                ),
+                ([Some(textures[7]), Some(textures[1]), None, None], 28,),
             ]
         );
+        let original_slots = external_texture_slots(&draw);
 
         draw.reverse();
 
+        assert_eq!(strip_xs(&draw), (0..32).rev().collect::<Vec<_>>());
         assert_eq!(
-            strip_xs(&draw),
-            [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+            external_texture_slots(&draw),
+            original_slots.into_iter().rev().collect::<Vec<_>>()
         );
         assert_eq!(
-            run_starts(draw.external_texture_runs()),
+            run_states(draw.external_texture_runs()),
             [
-                (texture_b, 0),
-                (texture_a, 1),
-                (texture_c, 3),
-                (texture_b, 8),
-                (texture_a, 10),
+                ([Some(textures[7]), Some(textures[1]), None, None], 0,),
+                (
+                    [
+                        Some(textures[4]),
+                        Some(textures[0]),
+                        Some(textures[5]),
+                        Some(textures[6]),
+                    ],
+                    4,
+                ),
+                (
+                    [
+                        Some(textures[0]),
+                        Some(textures[1]),
+                        Some(textures[2]),
+                        Some(textures[3]),
+                    ],
+                    13,
+                ),
             ]
         );
     }
@@ -788,12 +974,12 @@ mod tests {
         draw.reverse();
 
         assert_eq!(strip_xs(&draw), [2, 1, 0]);
-        assert_eq!(run_starts(draw.external_texture_runs()), []);
+        assert!(draw.external_texture_runs().is_empty());
     }
 
     #[test]
     fn draw_clear() {
-        let texture_id = TextureId(10);
+        let [texture_id] = texture_ids();
         let encoded = [external(texture_id)];
         let offsets = [0];
         let resolver = PaintResolver::new(&encoded, &offsets);

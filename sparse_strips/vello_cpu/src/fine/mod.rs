@@ -134,25 +134,36 @@ pub(crate) fn u8_to_f32<S: Simd>(val: u8x16<S>) -> f32x16<S> {
     let simd = val.simd;
     let zeroes = u8x16::splat(simd, 0);
 
-    let zip1 = simd.zip_high_u8x16(val, zeroes);
-    let zip2 = simd.zip_low_u8x16(val, zeroes);
+    #[cfg(target_endian = "little")]
+    let (p1, p2, p3, p4) = {
+        let lo = simd.zip_low_u8x16(val, zeroes);
+        let hi = simd.zip_high_u8x16(val, zeroes);
 
-    let p1 = simd
-        .zip_low_u8x16(zip2, zeroes)
-        .bitcast::<u32x4<S>>()
-        .to_float::<f32x4<S>>();
-    let p2 = simd
-        .zip_high_u8x16(zip2, zeroes)
-        .bitcast::<u32x4<S>>()
-        .to_float::<f32x4<S>>();
-    let p3 = simd
-        .zip_low_u8x16(zip1, zeroes)
-        .bitcast::<u32x4<S>>()
-        .to_float::<f32x4<S>>();
-    let p4 = simd
-        .zip_high_u8x16(zip1, zeroes)
-        .bitcast::<u32x4<S>>()
-        .to_float::<f32x4<S>>();
+        (
+            simd.zip_low_u8x16(lo, zeroes),
+            simd.zip_high_u8x16(lo, zeroes),
+            simd.zip_low_u8x16(hi, zeroes),
+            simd.zip_high_u8x16(hi, zeroes),
+        )
+    };
+
+    #[cfg(target_endian = "big")]
+    let (p1, p2, p3, p4) = {
+        let lo = simd.zip_low_u8x16(zeroes, val);
+        let hi = simd.zip_high_u8x16(zeroes, val);
+
+        (
+            simd.zip_low_u8x16(zeroes, lo),
+            simd.zip_high_u8x16(zeroes, lo),
+            simd.zip_low_u8x16(zeroes, hi),
+            simd.zip_high_u8x16(zeroes, hi),
+        )
+    };
+
+    let p1 = p1.bitcast::<u32x4<S>>().to_float::<f32x4<S>>();
+    let p2 = p2.bitcast::<u32x4<S>>().to_float::<f32x4<S>>();
+    let p3 = p3.bitcast::<u32x4<S>>().to_float::<f32x4<S>>();
+    let p4 = p4.bitcast::<u32x4<S>>().to_float::<f32x4<S>>();
 
     simd.combine_f32x8(simd.combine_f32x4(p1, p2), simd.combine_f32x4(p3, p4))
 }
@@ -1003,6 +1014,9 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                         .image_resolver
                         .resolve(*id)
                         .unwrap_or_else(|| panic!("Image {:?} not found in registry", id)),
+                    ImageSource::ExternalTexture { .. } => {
+                        unimplemented!("External textures are not supported by `vello_cpu`")
+                    }
                 };
                 let tint = image.tint.as_ref();
 
@@ -1062,9 +1076,6 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                         );
                     }
                 }
-            }
-            EncodedPaint::ExternalTexture(_) => {
-                unimplemented!("External textures are not supported by `vello_cpu`")
             }
         }
     }
@@ -1165,26 +1176,15 @@ pub(crate) struct ShaderResultF32<S: Simd> {
 impl<S: Simd> ShaderResultF32<S> {
     /// Convert from planar format to interleaved RGBA format.
     ///
-    /// Returns two f32x16 vectors containing 8 pixels (4 RGBA components each)
-    /// with channels interleaved in the standard RGBA order.
+    /// Returns two sets of four f32x4 vectors containing 8 pixels (4 RGBA components each),
     #[inline(always)]
-    pub(crate) fn get(&self) -> (f32x16<S>, f32x16<S>) {
+    pub(crate) fn get(&self) -> [[f32x4<S>; 4]; 2] {
         let (r_1, r_2) = self.r.simd.split_f32x8(self.r);
         let (g_1, g_2) = self.g.simd.split_f32x8(self.g);
         let (b_1, b_2) = self.b.simd.split_f32x8(self.b);
         let (a_1, a_2) = self.a.simd.split_f32x8(self.a);
 
-        let first = self.r.simd.combine_f32x8(
-            self.r.simd.combine_f32x4(r_1, g_1),
-            self.r.simd.combine_f32x4(b_1, a_1),
-        );
-
-        let second = self.r.simd.combine_f32x8(
-            self.r.simd.combine_f32x4(r_2, g_2),
-            self.r.simd.combine_f32x4(b_2, a_2),
-        );
-
-        (first, second)
+        [[r_1, g_1, b_1, a_1], [r_2, g_2, b_2, a_2]]
     }
 }
 

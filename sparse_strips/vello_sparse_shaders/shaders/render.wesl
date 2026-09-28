@@ -40,19 +40,11 @@ import package::helpers::gradient::{
 };
 import package::helpers::geometry::{pixel_to_ndc, quad_corner};
 import package::helpers::image::{
-    IMAGE_QUALITY_HIGH,
-    IMAGE_QUALITY_MEDIUM,
-    IMAGE_SOURCE_EXTERNAL,
     TINT_MODE_MULTIPLY,
-    bicubic_sample,
-    bilinear_sample,
-    get_image_atlas_index,
     get_image_extend_modes,
     get_image_offset,
-    get_image_padding,
     get_image_quality,
     get_image_size,
-    get_image_source_kind,
     get_image_transform,
     get_image_translate
 };
@@ -73,8 +65,9 @@ const PAINT_TYPE_RADIAL_GRADIENT: u32 = 3u;
 const PAINT_TYPE_SWEEP_GRADIENT: u32 = 4u;
 const PAINT_TYPE_BLURRED_ROUNDED_RECT: u32 = 5u;
 
-// Paint texture index mask (extracts lower 26 bits from paint field).
-const PAINT_TEXTURE_INDEX_MASK: u32 = 0x03FFFFFFu;
+// 24 bits for paint indices.
+const PAINT_TEXTURE_INDEX_MASK: u32 = 0x00FFFFFFu;
+const EXTERNAL_TEXTURE_SLOT_SHIFT: u32 = 24u;
 
 const RECT_STRIP_FLAG: u32 = 0x80000000u;
 
@@ -129,7 +122,8 @@ struct Config {
 //       - Bits 26-28: `paint_type` (0 = solid, 1 = image, 2 = linear_gradient, 3 = radial_gradient, 4 = sweep_gradient)
 //       - Bits 0-25:
 //         - If paint_type = 0: unused
-//         - If paint_type >= 1: `paint_texture_idx`
+//         - Bits 0-23: `paint_texture_idx` for every non-solid paint
+//         - Bits 24-25: external texture slot for external images; unused otherwise
 //
 //     When color_source = 1 (COLOR_SOURCE_LAYER):
 //       - Bits 0-7: opacity (0-255)
@@ -148,10 +142,10 @@ struct Config {
 // ├── paint_type = 3 (PAINT_TYPE_RADIAL_GRADIENT) - Radial gradient (with kind discriminator)
 // ├── paint_type = 4 (PAINT_TYPE_SWEEP_GRADIENT) - Sweep gradient rendering
 //     ├── payload = [x, y] scene coordinates (packed as u16s)
-//     └── bits 0-25 = paint_texture_idx
+//     └── bits 0-23 = paint_texture_idx
 // └── paint_type = 5 (PAINT_TYPE_BLURRED_ROUNDED_RECT) - Analytic blurred rounded rectangle
 //     ├── payload = [x, y] scene coordinates (packed as u16s)
-//     └── bits 0-25 = paint_texture_idx
+//     └── bits 0-23 = paint_texture_idx
 //
 // color_source = 1 (COLOR_SOURCE_LAYER) - Use rendered layer texture
 // ├── payload = [x, y] source layer texture origin (packed as u16s)
@@ -220,10 +214,16 @@ struct VertexOutput {
 var<uniform> config: Config;
 
 @group(1) @binding(0)
-var atlas_texture_array: texture_2d_array<f32>;
+var external_texture_0: texture_2d<f32>;
 
 @group(1) @binding(1)
-var external_texture: texture_2d<f32>;
+var external_texture_1: texture_2d<f32>;
+
+@group(1) @binding(2)
+var external_texture_2: texture_2d<f32>;
+
+@group(1) @binding(3)
+var external_texture_3: texture_2d<f32>;
 
 @group(2) @binding(0)
 var encoded_paints_texture: texture_2d<u32>;
@@ -399,10 +399,7 @@ fn fs_main(
             let image_offset = get_image_offset(image_texel0);
             let image_size = get_image_size(image_texel0);
             let image_extend_modes = get_image_extend_modes(image_texel0);
-            let image_atlas_index = get_image_atlas_index(image_texel0);
             let image_quality = get_image_quality(image_texel0);
-            let image_source_kind = get_image_source_kind(image_texel0);
-            let image_padding = get_image_padding(image_texel2);
             let packed_tint = image_texel2.y;
             let image_tint = unpack4x8unorm(packed_tint);
             let is_multiply = image_texel2.z == TINT_MODE_MULTIPLY;
@@ -420,44 +417,40 @@ fn fs_main(
             // using GPU-native bilinear sampling
 
             var sample_color: vec4<f32>;
-            if image_source_kind == IMAGE_SOURCE_EXTERNAL {
-                let final_xy = image_offset + extended_xy;
+            let external_texture_slot =
+                (paint_and_rect_flag >> EXTERNAL_TEXTURE_SLOT_SHIFT) & 0x3u;
+            let final_xy = image_offset + extended_xy;
+            if external_texture_slot == 0u {
                 sample_color = sample_external_image(
-                    external_texture,
+                    external_texture_0,
                     image_quality,
                     final_xy,
                     image_offset,
                     image_size,
                 );
-            } else if image_quality == IMAGE_QUALITY_HIGH {
-                let final_xy = image_offset + extended_xy;
-                sample_color = bicubic_sample(
-                    atlas_texture_array,
+            } else if external_texture_slot == 1u {
+                sample_color = sample_external_image(
+                    external_texture_1,
+                    image_quality,
                     final_xy,
-                    i32(image_atlas_index),
                     image_offset,
                     image_size,
-                    image_extend_modes,
-                    image_padding,
                 );
-            } else if image_quality == IMAGE_QUALITY_MEDIUM {
-                let final_xy = image_offset + extended_xy - vec2(0.5);
-                sample_color = bilinear_sample(
-                    atlas_texture_array,
+            } else if external_texture_slot == 2u {
+                sample_color = sample_external_image(
+                    external_texture_2,
+                    image_quality,
                     final_xy,
-                    i32(image_atlas_index),
                     image_offset,
                     image_size,
-                    image_extend_modes,
-                    image_padding,
                 );
             } else {
-                let final_xy = image_offset + extended_xy;
-                sample_color = textureLoad(
-                    atlas_texture_array,
-                    vec2<u32>(final_xy),
-                    i32(image_atlas_index),
-                    0,
+                sample_color = sample_external_image(
+                    external_texture_3,
+                    image_quality,
+                    final_xy,
+                    image_offset,
+                    image_size,
                 );
             }
 

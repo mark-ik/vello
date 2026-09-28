@@ -485,7 +485,7 @@ impl RenderContext {
         });
 
         let blend_mode = blend_mode.unwrap_or_default();
-        let opacity = opacity.unwrap_or(1.0);
+        let opacity = opacity.unwrap_or(1.0).clamp(0.0, 1.0);
         let layer_transform = self
             .root_transforms
             .effective_path_transform(self.transforms());
@@ -971,7 +971,8 @@ mod tests {
     use vello_common::color::PremulRgba8;
     use vello_common::color::palette::css::{BLUE, RED};
     use vello_common::kurbo::{Rect, Shape};
-    use vello_common::pixmap::{Pixmap, PixmapMut};
+    use vello_common::peniko::ImageAlphaType;
+    use vello_common::pixmap::{PixelMetadata, Pixmap, PixmapMut};
     use vello_common::tile::Tile;
 
     const GRAY: PremulRgba8 = PremulRgba8 {
@@ -995,9 +996,10 @@ mod tests {
 
     fn solid_pixmap(width: u16, height: u16, color: PremulRgba8) -> Pixmap {
         Pixmap::from_parts(
-            vec![color; usize::from(width) * usize::from(height)],
+            bytemuck::cast_vec(vec![color; usize::from(width) * usize::from(height)]),
             width,
             height,
+            PixelMetadata::new(ImageAlphaType::AlphaPremultiplied, color.a != 255),
         )
     }
 
