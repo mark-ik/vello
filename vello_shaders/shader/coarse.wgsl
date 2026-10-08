@@ -350,102 +350,94 @@ fn main(
         // if drawobj touches tile (x, y).
 
         // Write per-tile command list for this tile
-        var slice_ix = 0u;
-        var bitmap = atomicLoad(&sh_bitmaps[0u][local_id.x]);
-        while true {
-            if bitmap == 0u {
-                slice_ix += 1u;
-                // potential optimization: make iteration limit dynamic
-                if slice_ix == N_SLICE {
-                    break;
-                }
-                bitmap = atomicLoad(&sh_bitmaps[slice_ix][local_id.x]);
-                if bitmap == 0u {
-                    continue;
-                }
-            }
-
-            let el_ix = slice_ix * 32u + firstTrailingBit(bitmap);
-            drawobj_ix = sh_drawobj_ix[el_ix];
-            // clear LSB of bitmap, using bit magic
-            bitmap &= bitmap - 1u;
-            let drawtag = scene[config.drawtag_base + drawobj_ix];
-            let dm = draw_monoids[drawobj_ix];
-            let dd = config.drawdata_base + dm.scene_offset;
-            let di = dm.info_offset;
-            let draw_flags = info_bin_data[di];
-            if clip_zero_depth == 0u {
-                let tile_ix = sh_tile_base[el_ix] + sh_tile_stride[el_ix] * tile_y + tile_x;
-                let tile = tiles[tile_ix];
-                switch drawtag {
-                    case DRAWTAG_FILL_COLOR: {
-                        write_path(tile, tile_ix, draw_flags);
-                        let rgba_color = scene[dd];
-                        write_color(CmdColor(rgba_color));
-                    }
-                    case DRAWTAG_BLURRED_ROUNDED_RECT: {
-                        write_path(tile, tile_ix, draw_flags);
-                        let rgba_color = scene[dd];
-                        let info_offset = di + 1u;
-                        write_blurred_rounded_rect(CmdColor(rgba_color), info_offset);
-                    }
-                    case DRAWTAG_FILL_LIN_GRADIENT: {
-                        write_path(tile, tile_ix, draw_flags);
-                        let index = scene[dd];
-                        let info_offset = di + 1u;
-                        write_grad(CMD_LIN_GRAD, index, info_offset);
-                    }
-                    case DRAWTAG_FILL_RAD_GRADIENT: {
-                        write_path(tile, tile_ix, draw_flags);
-                        let index = scene[dd];
-                        let info_offset = di + 1u;
-                        write_grad(CMD_RAD_GRAD, index, info_offset);
-                    }
-                    case DRAWTAG_FILL_SWEEP_GRADIENT: {
-                        write_path(tile, tile_ix, draw_flags);
-                        let index = scene[dd];
-                        let info_offset = di + 1u;
-                        write_grad(CMD_SWEEP_GRAD, index, info_offset);
-                    }                    
-                    case DRAWTAG_FILL_IMAGE: {
-                        write_path(tile, tile_ix, draw_flags);
-                        write_image(di + 1u);
-                    }
-                    case DRAWTAG_BEGIN_CLIP: {
-                        let even_odd = (draw_flags & DRAW_INFO_FLAGS_FILL_RULE_BIT) != 0u;
-                        let backdrop_clear = select(tile.backdrop, abs(tile.backdrop) & 1, even_odd) == 0;
-                        if tile.segment_count_or_ix == 0u && backdrop_clear {
-                            clip_zero_depth = clip_depth + 1u;
-                        } else {
-                            write_begin_clip();
-                            render_blend_depth += 1u;
-                            max_blend_depth = max(max_blend_depth, render_blend_depth);
+        // Keep slice traversal separate from the per-slice bit iteration. The
+        // previous single infinite loop with continue/break drops all but the
+        // first command on Chrome's Metal path on Radeon Pro Vega 56.
+        for (var slice_ix = 0u; slice_ix < N_SLICE; slice_ix += 1u) {
+            var bitmap = atomicLoad(&sh_bitmaps[slice_ix][local_id.x]);
+            while bitmap != 0u {
+                let el_ix = slice_ix * 32u + firstTrailingBit(bitmap);
+                drawobj_ix = sh_drawobj_ix[el_ix];
+                // clear LSB of bitmap, using bit magic
+                bitmap &= bitmap - 1u;
+                let drawtag = scene[config.drawtag_base + drawobj_ix];
+                let dm = draw_monoids[drawobj_ix];
+                let dd = config.drawdata_base + dm.scene_offset;
+                let di = dm.info_offset;
+                let draw_flags = info_bin_data[di];
+                if clip_zero_depth == 0u {
+                    let tile_ix = sh_tile_base[el_ix] + sh_tile_stride[el_ix] * tile_y + tile_x;
+                    let tile = tiles[tile_ix];
+                    switch drawtag {
+                        case DRAWTAG_FILL_COLOR: {
+                            write_path(tile, tile_ix, draw_flags);
+                            let rgba_color = scene[dd];
+                            write_color(CmdColor(rgba_color));
                         }
-                        clip_depth += 1u;
-                    }
-                    case DRAWTAG_END_CLIP: {
-                        clip_depth -= 1u;
-                        write_path(tile, tile_ix, draw_flags);
-                        let blend = scene[dd];
-                        let alpha = bitcast<f32>(scene[dd + 1u]);
-                        write_end_clip(CmdEndClip(blend, alpha));
-                        render_blend_depth -= 1u;
-                    }
-                    default: {}
-                }
-            } else {
-                // In "clip zero" state, suppress all drawing
-                switch drawtag {
-                    case DRAWTAG_BEGIN_CLIP: {
-                        clip_depth += 1u;
-                    }
-                    case DRAWTAG_END_CLIP: {
-                        if clip_depth == clip_zero_depth {
-                            clip_zero_depth = 0u;
+                        case DRAWTAG_BLURRED_ROUNDED_RECT: {
+                            write_path(tile, tile_ix, draw_flags);
+                            let rgba_color = scene[dd];
+                            let info_offset = di + 1u;
+                            write_blurred_rounded_rect(CmdColor(rgba_color), info_offset);
                         }
-                        clip_depth -= 1u;
+                        case DRAWTAG_FILL_LIN_GRADIENT: {
+                            write_path(tile, tile_ix, draw_flags);
+                            let index = scene[dd];
+                            let info_offset = di + 1u;
+                            write_grad(CMD_LIN_GRAD, index, info_offset);
+                        }
+                        case DRAWTAG_FILL_RAD_GRADIENT: {
+                            write_path(tile, tile_ix, draw_flags);
+                            let index = scene[dd];
+                            let info_offset = di + 1u;
+                            write_grad(CMD_RAD_GRAD, index, info_offset);
+                        }
+                        case DRAWTAG_FILL_SWEEP_GRADIENT: {
+                            write_path(tile, tile_ix, draw_flags);
+                            let index = scene[dd];
+                            let info_offset = di + 1u;
+                            write_grad(CMD_SWEEP_GRAD, index, info_offset);
+                        }
+                        case DRAWTAG_FILL_IMAGE: {
+                            write_path(tile, tile_ix, draw_flags);
+                            write_image(di + 1u);
+                        }
+                        case DRAWTAG_BEGIN_CLIP: {
+                            let even_odd = (draw_flags & DRAW_INFO_FLAGS_FILL_RULE_BIT) != 0u;
+                            let backdrop_clear = select(tile.backdrop, abs(tile.backdrop) & 1, even_odd) == 0;
+                            if tile.segment_count_or_ix == 0u && backdrop_clear {
+                                clip_zero_depth = clip_depth + 1u;
+                            } else {
+                                write_begin_clip();
+                                render_blend_depth += 1u;
+                                max_blend_depth = max(max_blend_depth, render_blend_depth);
+                            }
+                            clip_depth += 1u;
+                        }
+                        case DRAWTAG_END_CLIP: {
+                            clip_depth -= 1u;
+                            write_path(tile, tile_ix, draw_flags);
+                            let blend = scene[dd];
+                            let alpha = bitcast<f32>(scene[dd + 1u]);
+                            write_end_clip(CmdEndClip(blend, alpha));
+                            render_blend_depth -= 1u;
+                        }
+                        default: {}
                     }
-                    default: {}
+                } else {
+                    // In "clip zero" state, suppress all drawing
+                    switch drawtag {
+                        case DRAWTAG_BEGIN_CLIP: {
+                            clip_depth += 1u;
+                        }
+                        case DRAWTAG_END_CLIP: {
+                            if clip_depth == clip_zero_depth {
+                                clip_zero_depth = 0u;
+                            }
+                            clip_depth -= 1u;
+                        }
+                        default: {}
+                    }
                 }
             }
         }
