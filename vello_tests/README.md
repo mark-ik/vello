@@ -15,6 +15,20 @@ The kinds of test currently used are:
     - This ensures that the GPU renderer matches the reference CPU renderer.
     - We hope to largely phase these out in favour of additional snapshot tests.
 
+## Image atlas across frames
+
+`image_atlas` renders one retained image with solid-only and empty scenes
+between its uses, through the same renderer. It checks every output pixel over
+13 frames; no snapshot downloads are required. Run this on the actual adapter:
+
+```sh
+cargo test -p vello_tests --test image_atlas -- --nocapture --test-threads=1
+```
+
+The test prints the adapter/backend and uses a bounded five-second wait for each
+owned readback. The resolver's CPU tests separately check retained atlas extent,
+empty upload lists, and an override refresh pending across a patchless frame.
+
 ## LFS
 
 We have two groups of snapshot tests.

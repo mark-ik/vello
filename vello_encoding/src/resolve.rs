@@ -188,7 +188,13 @@ impl Resolver {
         let resources = &encoding.resources;
         if resources.patches.is_empty() {
             let layout = resolve_solid_paths_only(encoding, packed);
-            return (layout, Ramps::default(), Images::default());
+            // A shared renderer may interleave solid-only surfaces with
+            // surfaces using resident images. Keep the atlas extent: returning
+            // default dimensions would discard its pixels without invalidating
+            // the residency cache. Begin this pass to clear earlier uploads and
+            // age unused entries, leaving pending override refreshes untouched.
+            self.image_cache.begin_resolve();
+            return (layout, Ramps::default(), self.image_cache.images());
         }
         let patch_sizes = self.resolve_patches(encoding);
         self.resolve_pending_images();
@@ -649,4 +655,69 @@ fn size_to_words(byte_size: usize) -> u32 {
 
 fn align_up(len: usize, alignment: u32) -> usize {
     len + (len.wrapping_neg() & (alignment as usize - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Resolver;
+    use crate::Encoding;
+    use peniko::{Blob, Color, ImageAlphaType, ImageData, ImageFormat};
+    use std::sync::Arc;
+
+    fn image_encoding() -> (ImageData, Encoding) {
+        // Force atlas growth, matching a window's large producer texture.
+        let image = ImageData {
+            data: Blob::new(Arc::new(vec![255; 1662 * 656 * 4])),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 1662,
+            height: 656,
+        };
+        let mut encoding = Encoding::default();
+        encoding.encode_empty_shape();
+        encoding.encode_image(&image, 1.0);
+        (image, encoding)
+    }
+
+    #[test]
+    fn patchless_resolves_preserve_the_resident_atlas_dimensions() {
+        let (_, image) = image_encoding();
+        let mut resolver = Resolver::new();
+        let mut packed = Vec::new();
+        let (_, _, first) = resolver.resolve(&image, &mut packed);
+        let extent = (first.width, first.height);
+        assert!(extent.0 >= 1662 && extent.1 >= 656);
+        assert_eq!(first.images.len(), 1);
+
+        let empty = Encoding::default();
+        let mut solid = Encoding::default();
+        solid.encode_empty_shape();
+        solid.encode_color(Color::new([0.2, 0.3, 0.4, 1.0]));
+        for patchless in [&empty, &solid, &empty] {
+            let (_, _, between) = resolver.resolve(patchless, &mut packed);
+            // A renderer must not replace its resident atlas with a 1x1
+            // texture merely because another surface has no resources.
+            assert_eq!((between.width, between.height), extent);
+            assert!(between.images.is_empty());
+        }
+        let (_, _, reused) = resolver.resolve(&image, &mut packed);
+        assert_eq!((reused.width, reused.height), extent);
+        assert!(reused.images.is_empty(), "resident pixels need no reupload");
+    }
+
+    #[test]
+    fn patchless_resolve_preserves_a_pending_override_refresh() {
+        let (handle, image) = image_encoding();
+        let mut resolver = Resolver::new();
+        let mut packed = Vec::new();
+        resolver.resolve(&image, &mut packed);
+        resolver.mark_image_dirty(&handle);
+        let (_, _, between) = resolver.resolve(&Encoding::default(), &mut packed);
+        assert!(between.images.is_empty());
+        let (_, _, refreshed) = resolver.resolve(&image, &mut packed);
+        assert_eq!(refreshed.images.len(), 1);
+        assert_eq!(refreshed.images[0].0.data.id(), handle.data.id());
+        let (_, _, settled) = resolver.resolve(&image, &mut packed);
+        assert!(settled.images.is_empty());
+    }
 }

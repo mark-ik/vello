@@ -124,12 +124,35 @@ pub async fn get_scene_images(
     scene: &Scene,
     frames: usize,
 ) -> Result<Vec<ImageData>, anyhow::Error> {
+    get_scene_sequence_images(params, &vec![scene; frames]).await
+}
+
+/// Render a sequence on one renderer, reading each frame back. Scene changes
+/// retain the renderer's image atlas and other resource caches between frames.
+pub fn get_scene_sequence_images_sync(
+    params: &TestParams,
+    scenes: &[&Scene],
+) -> Result<Vec<ImageData>, anyhow::Error> {
+    pollster::block_on(get_scene_sequence_images(params, scenes))
+}
+
+/// [`get_scene_sequence_images_sync`], asynchronously.
+pub async fn get_scene_sequence_images(
+    params: &TestParams,
+    scenes: &[&Scene],
+) -> Result<Vec<ImageData>, anyhow::Error> {
     let mut context = RenderContext::new();
     let device_id = context
         .device(None)
         .await
         .ok_or_else(|| anyhow!("No compatible device found"))?;
     let device_handle = &mut context.devices[device_id];
+    eprintln!(
+        "{}: adapter={:?}, use_cpu={}",
+        params.name,
+        device_handle.adapter().get_info(),
+        params.use_cpu
+    );
     let device = &device_handle.device;
     let queue = &device_handle.queue;
     let mut renderer = vello::Renderer::new(
@@ -166,8 +189,8 @@ pub async fn get_scene_images(
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut images = Vec::with_capacity(frames);
-    for _ in 0..frames {
+    let mut images = Vec::with_capacity(scenes.len());
+    for scene in scenes {
         renderer
             .render_to_texture(device, queue, scene, &view, &render_params)
             .or_else(|_| bail!("Got non-Send/Sync error from rendering"))?;
