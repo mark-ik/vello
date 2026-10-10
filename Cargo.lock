@@ -4631,7 +4631,7 @@ name = "vello_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "futures-intrusive",
+ "bytemuck",
  "image",
  "netrender-vello",
  "nv-flip",
@@ -4639,6 +4639,8 @@ dependencies = [
  "png",
  "pollster",
  "scenes",
+ "vello_encoding",
+ "vello_shaders",
 ]
 
 [[package]]

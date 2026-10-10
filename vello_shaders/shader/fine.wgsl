@@ -1086,15 +1086,46 @@ fn main(
     var cmd_ix = tile_ix * PTCL_INITIAL_ALLOC;
     let blend_offset = ptcl[cmd_ix];
     cmd_ix += 1u;
+    // Coarse command allocation only emits forward jumps. Require progress
+    // and a complete command before reading its operands: malformed or
+    // exhausted lists must never trap a GPU invocation in an infinite loop.
+    let command_words = arrayLength(&ptcl);
     // main interpretation loop
     while true {
+        if cmd_ix >= command_words {
+            return;
+        }
         let tag = ptcl[cmd_ix];
         if tag == CMD_END {
             break;
         }
+        var command_size = 0u;
+        switch tag {
+            case CMD_FILL: { command_size = 4u; }
+            case CMD_SOLID, CMD_BEGIN_CLIP: { command_size = 1u; }
+            case CMD_COLOR, CMD_JUMP, CMD_IMAGE: { command_size = 2u; }
+            case CMD_END_CLIP, CMD_BLUR_RECT, CMD_LIN_GRAD, CMD_RAD_GRAD, CMD_SWEEP_GRAD: {
+                command_size = 3u;
+            }
+            default: { return; }
+        }
+        if command_size > command_words - cmd_ix {
+            return;
+        }
         switch tag {
             case CMD_FILL: {
                 let fill = read_fill(cmd_ix);
+                // Bounds checks make an invalid segment load safe, but do not
+                // make a scene-supplied, billion-iteration fill loop timely.
+                // Validate the complete span before either fine implementation.
+                let segment_count = arrayLength(&segments);
+                let n_segs = fill.size_and_rule >> 1u;
+                if fill.seg_data > segment_count {
+                    return;
+                }
+                if n_segs > segment_count - fill.seg_data {
+                    return;
+                }
 #ifdef msaa
                 fill_path_ms(fill, local_id.xy, &area);
 #else
@@ -1136,6 +1167,9 @@ fn main(
                 cmd_ix += 1u;
             }
             case CMD_END_CLIP: {
+                if clip_depth == 0u {
+                    return;
+                }
                 let end_clip = read_end_clip(cmd_ix);
                 clip_depth -= 1u;
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
@@ -1168,7 +1202,11 @@ fn main(
                 cmd_ix += 3u;
             }
             case CMD_JUMP: {
-                cmd_ix = ptcl[cmd_ix + 1u];
+                let next_cmd = ptcl[cmd_ix + 1u];
+                if next_cmd <= cmd_ix || next_cmd >= command_words {
+                    return;
+                }
+                cmd_ix = next_cmd;
             }
             case CMD_BLUR_RECT: {
                 /// Approximation for the convolution of a gaussian filter with a rounded rectangle.

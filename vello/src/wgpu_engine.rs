@@ -843,16 +843,14 @@ impl WgpuEngine {
         entries: Vec<wgpu::BindGroupLayoutEntry>,
         cache: Option<&PipelineCache>,
     ) -> WgpuShader {
-        // SAFETY: We only call this with trusted shaders (written by Vello developers)
-        let shader_module = unsafe {
-            device.create_shader_module_trusted(
-                wgpu::ShaderModuleDescriptor {
-                    label: Some(label),
-                    source: wgpu::ShaderSource::Wgsl(wgsl),
-                },
-                wgpu::ShaderRuntimeChecks::unchecked(),
-            )
-        };
+        // The shader source is maintained here, but its runtime indices and
+        // command streams come from scene-dependent GPU allocations. Native
+        // backends must enforce the same bounds and arithmetic checks as
+        // WebGPU rather than trusting every dynamically generated value.
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(label),
+            source: wgpu::ShaderSource::Wgsl(wgsl),
+        });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &entries,
@@ -869,7 +867,7 @@ impl WgpuEngine {
             module: &shader_module,
             entry_point: None,
             compilation_options: PipelineCompilationOptions {
-                zero_initialize_workgroup_memory: false,
+                zero_initialize_workgroup_memory: true,
                 ..Default::default()
             },
             cache,

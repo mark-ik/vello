@@ -30,7 +30,8 @@ use std::env;
 use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use scenes::{ExampleScene, ImageCache, SceneParams, SimpleText};
@@ -41,7 +42,7 @@ use vello::wgpu::{
     self, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, TexelCopyBufferInfo,
     TextureDescriptor, TextureFormat, TextureUsages,
 };
-use vello::{AaConfig, RendererOptions, Scene, util::RenderContext, util::block_on_wgpu};
+use vello::{AaConfig, RendererOptions, Scene, util::RenderContext};
 
 mod compare;
 mod snapshot;
@@ -211,21 +212,31 @@ fn read_target(
         },
         size,
     );
-    queue.submit([encoder.finish()]);
+    let submission = queue.submit([encoder.finish()]);
     let buf_slice = buffer.slice(..);
-    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-    buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    if let Some(recv_result) = block_on_wgpu(device, receiver.receive()) {
-        recv_result?;
-    } else {
-        bail!("channel was closed");
-    }
-    let data = buf_slice.get_mapped_range().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    buf_slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    // This copy depends on the producer render. Wait for our submission only,
+    // with a deadline; an unrelated later submission cannot extend the wait.
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(Duration::from_secs(5)),
+        })
+        .map_err(|error| anyhow!("Bounded render readback poll failed: {error}"))?;
+    receiver.try_recv().map_err(|error| {
+        anyhow!("Readback callback missing after completed submission: {error}")
+    })??;
+    let data = buf_slice.get_mapped_range()?;
     let mut result_unpadded = Vec::<u8>::with_capacity((width * height * 4).try_into()?);
     for row in 0..height {
         let start = (row * padded_byte_width).try_into()?;
         result_unpadded.extend(&data[start..start + (width * 4) as usize]);
     }
+    drop(data);
+    buffer.unmap();
     let data = Blob::new(Arc::new(result_unpadded));
     let image = ImageData {
         data,

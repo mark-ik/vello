@@ -118,17 +118,33 @@ pub async fn compare_gpu_cpu(scene: Scene, mut params: TestParams) -> Result<Gpu
     let cpu_path = cpu_dir.join(&params.name).with_extension(".png");
     let gpu_path = path_root.join(&params.name).with_extension(".png");
 
-    assert!(gpu_rendered.width == cpu_rendered.width && gpu_rendered.height == cpu_rendered.height,);
+    let pool = comparison_statistics(&gpu_rendered, &cpu_rendered)?;
+
+    Ok(GpuCpuComparison {
+        statistics: Some(pool),
+        cpu_path,
+        gpu_path,
+        cpu_rendered,
+        gpu_rendered,
+        params,
+    })
+}
+
+fn comparison_statistics(gpu_rendered: &ImageData, cpu_rendered: &ImageData) -> Result<FlipPool> {
+    assert_eq!(
+        (gpu_rendered.width, gpu_rendered.height),
+        (cpu_rendered.width, cpu_rendered.height)
+    );
 
     // Compare the images using nv-flip
     assert_eq!(cpu_rendered.format, ImageFormat::Rgba8);
     assert_eq!(gpu_rendered.format, ImageFormat::Rgba8);
     let gpu_rendered_data: DynamicImage = image::RgbaImage::from_raw(
-        cpu_rendered.width,
-        cpu_rendered.height,
-        cpu_rendered.data.as_ref().to_vec(),
+        gpu_rendered.width,
+        gpu_rendered.height,
+        gpu_rendered.data.as_ref().to_vec(),
     )
-    .ok_or(anyhow!("Couldn't create image for cpu result"))?
+    .ok_or(anyhow!("Couldn't create image for gpu result"))?
     .into();
     let gpu_rendered_data = gpu_rendered_data.to_rgb8();
 
@@ -154,14 +170,37 @@ pub async fn compare_gpu_cpu(scene: Scene, mut params: TestParams) -> Result<Gpu
 
     let error_map = nv_flip::flip(cpu_flip, gpu_flip, nv_flip::DEFAULT_PIXELS_PER_DEGREE);
 
-    let pool = FlipPool::from_image(&error_map);
+    Ok(FlipPool::from_image(&error_map))
+}
 
-    Ok(GpuCpuComparison {
-        statistics: Some(pool),
-        cpu_path,
-        gpu_path,
-        cpu_rendered,
-        gpu_rendered,
-        params,
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use vello::peniko::{Blob, ImageAlphaType};
+
+    fn solid_image(pixel: [u8; 4]) -> ImageData {
+        ImageData {
+            data: Blob::new(Arc::new(pixel.repeat(16 * 16))),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 16,
+            height: 16,
+        }
+    }
+
+    #[test]
+    fn comparison_detects_independent_gpu_and_cpu_divergence() {
+        let cpu = solid_image([255, 255, 255, 255]);
+        let gpu = solid_image([0, 0, 0, 255]);
+        assert_eq!(comparison_statistics(&cpu, &cpu).unwrap().mean(), 0.0);
+        assert!(
+            comparison_statistics(&gpu, &cpu).unwrap().mean() > 0.5,
+            "a black GPU frame must disagree with the white CPU frame"
+        );
+        assert!(
+            comparison_statistics(&cpu, &gpu).unwrap().mean() > 0.5,
+            "both comparison inputs must affect the result"
+        );
+    }
 }
