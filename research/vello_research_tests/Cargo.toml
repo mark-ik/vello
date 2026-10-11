@@ -1,0 +1,29 @@
+[package]
+name = "vello_research_tests"
+description = "Integration tests for Vello."
+categories = ["rendering", "graphics"]
+keywords = ["2d", "vector-graphics"]
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vello = { workspace = true }
+anyhow = { workspace = true }
+
+pollster = { workspace = true }
+png = { workspace = true }
+nv-flip = "0.1.2"
+image = { workspace = true, features = ["png"] }
+
+scenes = { workspace = true }
+oxipng = { workspace = true, features = ["freestanding", "parallel"] }
+
+[dev-dependencies]
+vello_encoding = { workspace = true }
+vello_shaders = { workspace = true }
+bytemuck = { workspace = true }

@@ -1,87 +1,157 @@
 // Copyright 2026 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Image atlas residency must survive intervening renders without resources.
+//! Tests for the image/glyph atlas configuration of the WebGL renderer.
 
-use vello::{
-    Scene,
-    kurbo::{Affine, Rect},
-    peniko::{
-        Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, ImageQuality, ImageSampler,
-    },
+use vello_common::{
+    geometry::RectU16,
+    kurbo::Rect,
+    paint::{Image, ImageSource},
+    peniko::ImageSampler,
+    pixmap::Pixmap,
 };
-use vello_tests::{TestParams, get_scene_sequence_images_sync};
+use vello_gpu::{
+    AtlasConfig, AtlasId, AtlasTextureInfo, MemorySettings, RenderError, RenderSettings, Scene,
+    TextureId, WebGlError, WebGlRenderer, WebGlTextureBindings,
+};
+use wasm_bindgen::JsCast;
+use wasm_bindgen_test::*;
+use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
-const SIDE: u32 = 32;
+fn create_canvas() -> HtmlCanvasElement {
+    web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap()
+}
 
-#[test]
-#[cfg_attr(skip_gpu_tests, ignore)]
-fn resident_image_survives_repeated_patchless_solid_and_empty_frames() {
-    let mut pixels = Vec::with_capacity((SIDE * SIDE * 4) as usize);
-    for y in 0..SIDE {
-        for x in 0..SIDE {
-            // Four distinct opaque quadrants catch lost, shifted or truncated
-            // atlas content. Integer placement and nearest sampling make every
-            // output pixel exact, without a snapshot tolerance.
-            let color = match (x < SIDE / 2, y < SIDE / 2) {
-                (true, true) => [255, 0, 0, 255],
-                (false, true) => [0, 255, 0, 255],
-                (true, false) => [0, 0, 255, 255],
-                (false, false) => [255, 255, 0, 255],
-            };
-            pixels.extend_from_slice(&color);
-        }
-    }
-    let image = ImageBrush {
-        image: ImageData {
-            data: pixels.clone().into(),
-            format: ImageFormat::Rgba8,
-            width: SIDE,
-            height: SIDE,
-            alpha_type: ImageAlphaType::Alpha,
-        },
-        sampler: ImageSampler {
-            quality: ImageQuality::Low,
-            ..Default::default()
-        },
+#[wasm_bindgen_test]
+fn image_atlas_texture_is_created_on_first_upload() {
+    let canvas = create_canvas();
+    canvas.set_width(100);
+    canvas.set_height(100);
+
+    let atlas_config = AtlasConfig {
+        initial_atlas_count: 0,
+        atlas_size: (10, 10),
+        ..AtlasConfig::default()
     };
-    let mut image_scene = Scene::new();
-    image_scene.draw_image(&image, Affine::IDENTITY);
-    let mut solid_scene = Scene::new();
-    solid_scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        Color::from_rgba8(255, 0, 255, 255),
-        None,
-        &Rect::new(0.0, 0.0, f64::from(SIDE), f64::from(SIDE)),
-    );
-    let empty_scene = Scene::new();
+    let settings = RenderSettings {
+        memory_settings: MemorySettings {
+            image_atlas_config: atlas_config,
+            ..MemorySettings::default()
+        },
+        ..RenderSettings::default()
+    };
+    let (mut renderer, mut resources) = WebGlRenderer::new_with(&canvas, settings, true).unwrap();
 
-    // The very same image resource must remain usable: rebuilding it would
-    // allocate a new atlas entry and hide the original residency failure.
-    let mut sequence = vec![&image_scene];
-    for _ in 0..3 {
-        sequence.extend([&solid_scene, &image_scene, &empty_scene, &image_scene]);
-    }
-    let mut params = TestParams::new("image_atlas_after_patchless_frames", SIDE, SIDE);
-    params.base_color = Some(Color::from_rgba8(0, 0, 0, 0));
-    let frames = get_scene_sequence_images_sync(&params, &sequence).unwrap();
-    assert_eq!(frames.len(), sequence.len());
-    let solid_pixels = [255, 0, 255, 255].repeat((SIDE * SIDE) as usize);
-    let empty_pixels = vec![0; (SIDE * SIDE * 4) as usize];
-    for (index, frame) in frames.iter().enumerate() {
-        assert_eq!((frame.width, frame.height), (SIDE, SIDE));
-        let expected = if index == 0 || index % 2 == 0 {
-            &pixels
-        } else if index % 4 == 1 {
-            &solid_pixels
-        } else {
-            &empty_pixels
-        };
-        assert_eq!(
-            frame.data.data(),
-            expected.as_slice(),
-            "frame {index} must preserve the exact image or patchless-frame pixels"
-        );
-    }
+    assert_eq!(
+        renderer.atlas_info(),
+        AtlasTextureInfo {
+            width: 10,
+            height: 10,
+            texture_count: 0,
+        },
+        "renderer should start without allocated atlas textures"
+    );
+    assert_eq!(
+        renderer.gl_context().get_error(),
+        WebGl2RenderingContext::NO_ERROR,
+        "renderer initialization should not produce a WebGL error"
+    );
+
+    renderer
+        .upload_image(&mut resources, &Pixmap::new(2, 2))
+        .unwrap();
+
+    assert_eq!(
+        renderer.atlas_info(),
+        AtlasTextureInfo {
+            width: 10,
+            height: 10,
+            texture_count: 1,
+        },
+        "first upload should allocate the first configured atlas texture"
+    );
+    assert_eq!(
+        renderer.gl_context().get_error(),
+        WebGl2RenderingContext::NO_ERROR,
+        "first atlas upload should not produce a WebGL error"
+    );
+}
+
+/// Uploading an image that is larger than the configured atlas must fail with
+/// `AtlasError::TextureTooLarge`.
+///
+/// The renderer constructor configures the allocator in the returned resources, which runs the
+/// `TextureTooLarge` check.
+#[wasm_bindgen_test]
+fn image_atlas_upload_larger_than_atlas_fails() {
+    let canvas = create_canvas();
+    canvas.set_width(100);
+    canvas.set_height(100);
+
+    let atlas_config = AtlasConfig {
+        atlas_size: (10, 10),
+        ..AtlasConfig::default()
+    };
+    let settings = RenderSettings {
+        memory_settings: MemorySettings {
+            image_atlas_config: atlas_config,
+            ..MemorySettings::default()
+        },
+        ..RenderSettings::default()
+    };
+
+    let (mut renderer, mut resources) = WebGlRenderer::new_with(&canvas, settings, true).unwrap();
+
+    // The image is much larger than the 10x10 atlas, so the upload must fail.
+    let image = Pixmap::new(64, 64);
+    assert!(
+        matches!(
+            renderer.upload_image(&mut resources, &image),
+            Err(WebGlError::Render(RenderError::AtlasError(_)))
+        ),
+        "oversized image upload should return an atlas error"
+    );
+}
+
+#[wasm_bindgen_test]
+fn image_atlas_rejects_sampling_from_its_render_target() {
+    let canvas = create_canvas();
+    let atlas_config = AtlasConfig {
+        initial_atlas_count: 1,
+        atlas_size: (1, 1),
+        ..AtlasConfig::default()
+    };
+    let settings = RenderSettings {
+        memory_settings: MemorySettings {
+            image_atlas_config: atlas_config,
+            ..MemorySettings::default()
+        },
+        ..RenderSettings::default()
+    };
+    let (mut renderer, _) = WebGlRenderer::new_with(&canvas, settings, false).unwrap();
+    let texture_id = TextureId(0);
+    let mut bindings = WebGlTextureBindings::new();
+    bindings.insert(texture_id, renderer.atlas_texture(AtlasId::new(0)).clone());
+
+    let mut scene = Scene::new(1, 1);
+    scene.set_paint(Image {
+        image: ImageSource::external_texture(texture_id, RectU16::new(0, 0, 1, 1), false),
+        sampler: ImageSampler::default(),
+    });
+    scene.fill_rect(&Rect::new(0.0, 0.0, 1.0, 1.0));
+
+    assert!(
+        matches!(
+            renderer.render_to_atlas(&scene, 1, atlas_config, AtlasId::new(0), &bindings),
+            Err(WebGlError::Render(RenderError::TextureFeedbackLoop(id))) if id == texture_id
+        ),
+        "sampling from the render target should fail"
+    );
 }

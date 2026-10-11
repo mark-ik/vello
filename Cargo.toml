@@ -1,32 +1,35 @@
 [workspace]
 resolver = "2"
+exclude = ["fuzz"]
 members = [
-    "vello",
-    "vello_encoding",
-    "vello_shaders",
+    "research/vello_research",
+    "research/vello_encoding",
+    "research/vello_shaders",
+    "research/vello_research_tests",
+    "research/xtask",
+
+    "research/examples/headless",
+    "tools/run_wasm",
+    "research/examples/scenes",
+    "research/examples/simple",
+    "research/examples/with_winit",
+
+    "vello_cpu",
+    "vello_cpu/examples/wasm_cpu",
+    "vello_cpu/examples/winit",
+    "vello_gpu",
+    "vello_gpu/examples/native_webgl",
+    "vello_gpu/examples/wgpu_webgl",
+    "vello_gpu/examples/wgpu_webgpu",
+    "vello_gpu/examples/winit",
+
+    "vello_bench",
+    "vello_common",
+    "vello_gpu_shaders",
+    "vello_toy",
     "vello_tests",
-    "xtask",
-
-    "examples/headless",
-    "examples/run_wasm",
-    "examples/scenes",
-    "examples/simple",
-    "examples/with_winit",
-
-    "sparse_strips/vello_bench",
-    "sparse_strips/vello_common",
-    "sparse_strips/vello_cpu",
-    "sparse_strips/vello_cpu/examples/wasm_cpu",
-    "sparse_strips/vello_cpu/examples/winit",
-    "sparse_strips/vello_hybrid",
-    "sparse_strips/vello_sparse_shaders",
-    "sparse_strips/vello_hybrid/examples/native_webgl",
-    "sparse_strips/vello_example_scenes",
-    "sparse_strips/vello_hybrid/examples/wgpu_webgl",
-    "sparse_strips/vello_hybrid/examples/winit",
-    "sparse_strips/vello_toy",
-    "sparse_strips/vello_dev_macros",
-    "sparse_strips/vello_sparse_tests",
+    "vello_tests/vello_dev_macros",
+    "vello_tests/vello_example_scenes",
     "glifo",
 ]
 
@@ -37,11 +40,11 @@ members = [
 # NOTE: When bumping this, remember to also bump the aforementioned other packages'
 #       version in the dependencies section at the bottom of this file.
 #       Additionally, bump the Vello dependency version in the 'simple' example.
-version = "0.10.0"
+version = "0.11.0"
 
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files
-# and with the MSRV in the `Unreleased` section of CHANGELOG.md.
+# and with the MSRV in the `Unreleased` section of research/CHANGELOG.md.
 rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/mark-ik/vello"
@@ -64,6 +67,11 @@ rust.unused_import_braces = "warn"
 rust.unused_lifetimes = "warn"
 rust.unused_macro_rules = "warn"
 rust.unused_qualifications = "warn"
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(disable_dispatch_sse4_2)",
+    "cfg(disable_dispatch_avx2)",
+    "cfg(disable_dispatch_avx512)",
+] }
 
 clippy.too_many_arguments = "allow"
 
@@ -94,9 +102,9 @@ clippy.wildcard_dependencies = "warn"
 # END LINEBENDER LINT SET
 
 [workspace.dependencies]
-vello = { package = "netrender-vello", version = "0.10.1", path = "vello" }
-vello_encoding = { version = "0.10.0", path = "vello_encoding" }
-vello_shaders = { version = "0.10.0", path = "vello_shaders" }
+vello = { package = "netrender-vello", version = "0.11.0", path = "research/vello_research" }
+vello_encoding = { version = "0.11.0", path = "research/vello_encoding" }
+vello_shaders = { version = "0.11.0", path = "research/vello_shaders" }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["autohint_shaping"] }
 # The version of kurbo used below should be kept in sync
@@ -122,24 +130,24 @@ fearless_simd = { version = "0.7.0", default-features = false }
 
 # Unlike the other crates, please do not update these before a release
 # unless absolutely necessary.
-js-sys = "0.3.92"
-wasm-bindgen = "0.2.115"
-wasm-bindgen-futures = "0.4.65"
-wasm-bindgen-test = "0.3.65"
-web-sys = "0.3.92"
+js-sys = "0.3.104"
+wasm-bindgen = "0.2.127"
+wasm-bindgen-futures = "0.4.77"
+wasm-bindgen-test = "0.3.77"
+web-sys = "0.3.104"
 
-vello_common = { version = "0.2.0", path = "sparse_strips/vello_common", default-features = false }
-vello_cpu = { version = "0.2.0", path = "sparse_strips/vello_cpu" }
-vello_hybrid = { version = "0.2.0", path = "sparse_strips/vello_hybrid", default-features = false }
-vello_sparse_shaders = { version = "0.2.0", path = "sparse_strips/vello_sparse_shaders" }
-glifo = { version = "0.3.0", path = "glifo", default-features = false }
-vello_example_scenes = { path = "sparse_strips/vello_example_scenes" }
-vello_dev_macros = { path = "sparse_strips/vello_dev_macros" }
+vello_common = { version = "0.3.0", path = "vello_common", default-features = false }
+vello_cpu = { version = "0.3.0", path = "vello_cpu" }
+vello_gpu = { version = "0.3.0", path = "vello_gpu", default-features = false }
+vello_gpu_shaders = { version = "0.3.0", path = "vello_gpu_shaders" }
+glifo = { version = "0.4.0", path = "glifo", default-features = false }
+vello_example_scenes = { path = "vello_tests/vello_example_scenes" }
+vello_dev_macros = { path = "vello_tests/vello_dev_macros" }
 
 # NOTE: The wgpu and naga versions should be kept in sync, and make sure to keep this
-# in sync with the version badge in README.md and vello/README.md
-wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl"] }
-naga = { version = "30.0.0", default-features = false }
+# in sync with the version badge in README.md and research/vello_research/README.md
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
+naga = { version = "30.0.1", default-features = false }
 log = "0.4.29"
 image = { version = "0.25.10", default-features = false }
 
@@ -150,7 +158,7 @@ pollster = "0.4.0"
 web-time = "1.1.0"
 wgpu-profiler = "0.28.0"
 winit = "0.30.13"
-scenes = { path = "examples/scenes" }
+scenes = { path = "research/examples/scenes" }
 svg = "0.18.0"
 criterion = { version = "0.5.1", default-features = false }
 rand = { version = "0.9.4", default-features = false, features = ["std_rng"] }

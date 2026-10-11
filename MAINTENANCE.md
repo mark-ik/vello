@@ -69,3 +69,39 @@ cargo test --locked -p vello_tests --test dynamic_memory -j2 -- --test-threads=1
 
 This is a fix on the 0.10 maintenance line. It does not adopt the upstream
 0.11 release or change the published package version.
+
+
+## Latest release adoption (2026-10-11, qualification in progress)
+
+The user requested current releases before further resource-parity work. This
+merge starts at maintained `10f01d6d`, preserving the Radeon coarse traversal,
+native fine command guards, resident atlas, allocation-count recovery and
+consumed/tile-aligned append, and adopts stable upstream
+`f3000c8d9e7a9c7e6abb09b9587238bf8b4860ff`: Classic 0.11.0, CPU/GPU/common
+0.3.0 and Glifo 0.4.0. Classic keeps package `netrender-vello` (lib `vello`)
+and moves under `research/`; Hybrid is now package `vello_gpu`.
+
+Classic render/recovery, wgpu engine, image-atlas resolver and coarse/fine
+shader sources are byte-identical to the maintained baseline. The relocated
+research test harness preserves the shared device, actual GPU/CPU comparison
+inputs, same-renderer repeated-frame helpers and bounded readback. The four
+maintained Classic regression files moved to `research/vello_research_tests`.
+The new `vello_tests` tree is the upstream Sparse Strips suite.
+
+Sparse append retains global paint coordinates and its existing refusal
+subset. Checked range/table remaps, packed-alpha limits and bbox snapping now
+refuse overflow before target mutation; nine focused CPU-only unit tests pass.
+This is not arbitrary fragment composition or live external-producer import.
+
+The lock aligns wgpu/naga/core/hal/types/core-deps at 30.0.1. Wasm bindings and
+the exact windowed-example pin are aligned at wasm-bindgen 0.2.127 (js/web-sys
+0.3.104, futures 0.4.77, test 0.3.77), required by that wgpu patch release.
+Runtime/browser qualification remains separate from dependency resolution.
+
+Local validation logs: `Code/output/vello-release-adoption-20261011/`. CPU
+provider and consumer gates are running serially with two Cargo jobs. The
+first provider attempt exposed the Wasm version conflict; it is preserved in
+the logs. GPU/native/browser execution awaits the explicit shared-lane handoff.
+No old 0.10 receipt is relabeled as release-0.11 qualification. Consumer pins
+and publication follow the qualified provider source; no registry release
+is implied by this source merge.
