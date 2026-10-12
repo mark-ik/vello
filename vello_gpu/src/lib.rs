@@ -137,6 +137,9 @@ use thiserror::Error;
 #[derive(Error, Debug, Clone)]
 #[non_exhaustive]
 pub enum RenderError {
+    /// The recorded scene exceeded bounded device-pixel curve flattening work.
+    #[error("Curve flattening refused: {0}")]
+    CurveFlattening(vello_common::flatten::FlattenError),
     /// An image atlas allocation failed.
     #[error("Atlas allocation failed: {0}")]
     AtlasError(#[from] AtlasError),

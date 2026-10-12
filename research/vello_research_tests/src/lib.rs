@@ -188,7 +188,17 @@ pub async fn get_scene_sequence_images(
         renderer
             .render_to_texture(device, queue, scene, &view, &render_params)
             .or_else(|_| bail!("Got non-Send/Sync error from rendering"))?;
-        images.push(read_target(device, queue, &target, width, height)?);
+        let image = read_target(device, queue, &target, width, height)?;
+        // This helper's own bounded copy completed the preceding producer render.
+        // Observe its deferred quality result before publishing any image/receipt.
+        renderer
+            .poll_curve_quality(device)
+            .or_else(|error| bail!("Curve quality readback refused: {error:?}"))?;
+        anyhow::ensure!(
+            renderer.pending_curve_quality() == (0, 0),
+            "Completed bounded readback left unobserved curve quality counters"
+        );
+        images.push(image);
     }
     Ok(images)
 }

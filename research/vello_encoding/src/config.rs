@@ -36,6 +36,13 @@ pub struct BumpAllocators {
     pub lines: u32,
 }
 
+/// Non-recoverable curve quality/work failure. Distinct from memory-growth
+/// flags; hosts must report a refusal rather than retry at lower quality.
+pub const FLATTEN_QUALITY_FAILED: u32 = 0x20;
+
+/// Maximum Classic line output before a typed curve-quality refusal (matches WGSL).
+pub const MAX_FLATTEN_LINES: usize = 16_777_216;
+
 #[derive(Default)]
 pub struct BumpAllocatorMemory {
     pub total: u32,
@@ -56,12 +63,13 @@ impl BumpAllocators {
         let segments = BufferSize::new(self.segments);
         let lines = BufferSize::new(self.lines);
         BumpAllocatorMemory {
-            total: binning.size_in_bytes()
-                + ptcl.size_in_bytes()
-                + tile.size_in_bytes()
-                + seg_counts.size_in_bytes()
-                + segments.size_in_bytes()
-                + lines.size_in_bytes(),
+            total: binning
+                .size_in_bytes()
+                .saturating_add(ptcl.size_in_bytes())
+                .saturating_add(tile.size_in_bytes())
+                .saturating_add(seg_counts.size_in_bytes())
+                .saturating_add(segments.size_in_bytes())
+                .saturating_add(lines.size_in_bytes()),
             binning,
             ptcl,
             tile,
@@ -307,7 +315,7 @@ impl<T: Sized> BufferSize<T> {
 
     /// Returns the size in bytes.
     pub const fn size_in_bytes(self) -> u32 {
-        size_of::<T>() as u32 * self.len
+        (size_of::<T>() as u32).saturating_mul(self.len)
     }
 
     /// Returns the size in bytes aligned up to the given value.

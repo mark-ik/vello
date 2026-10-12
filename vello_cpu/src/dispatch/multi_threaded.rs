@@ -55,6 +55,7 @@ type RecordedCommandReceiver = ordered_channel::Receiver<RecordedCommandTask>;
 /// The below comments will hopefully help with understanding the overall structure and lifecycles
 /// a bit better.
 pub(crate) struct MultiThreadedDispatcher {
+    flattening_errors: Arc<Mutex<Option<vello_common::flatten::FlattenError>>>,
     bucketer: Mutex<CommandBucketer>,
     clip_context: ClipContext,
     recorder: CommandRecorder<RecordedFill>,
@@ -139,6 +140,7 @@ impl MultiThreadedDispatcher {
         let flushed = true;
 
         Self {
+            flattening_errors: Arc::new(Mutex::new(None)),
             bucketer: Mutex::new(CommandBucketer::from_wh(width, height)),
             thread_pool,
             allocations: Allocations::default(),
@@ -193,6 +195,7 @@ impl MultiThreadedDispatcher {
         let (recorded_command_sender, recorded_command_receiver) = ordered_channel::unbounded();
         let workers = self.workers.clone();
         let alpha_storage = self.alpha_storage.clone();
+        let flattening_errors = self.flattening_errors.clone();
 
         self.task_sender = Some(render_task_sender);
         self.recorded_command_receiver = Some(recorded_command_receiver);
@@ -221,6 +224,14 @@ impl MultiThreadedDispatcher {
             alpha_storage.with_inner(|alphas| {
                 alphas[thread_id as usize] = worker.finalize();
             });
+            if let Some(error) = worker.flattening_error() {
+                let mut first = flattening_errors
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                if first.is_none() {
+                    *first = Some(error);
+                }
+            }
 
             // Then, we drop the `recorded_command_sender`. Once all worker threads have
             // dropped their `recorded_command_sender`, the main thread knows that all workers are done
@@ -460,6 +471,12 @@ impl MultiThreadedDispatcher {
 }
 
 impl Dispatcher for MultiThreadedDispatcher {
+    fn flattening_error(&self) -> Option<vello_common::flatten::FlattenError> {
+        self.strip_generator.flattening_error().or(*self
+            .flattening_errors
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()))
+    }
     fn has_layers(&self) -> bool {
         self.layer_depth != 0
     }
@@ -574,6 +591,10 @@ impl Dispatcher for MultiThreadedDispatcher {
 
     fn reset(&mut self, width: u16, height: u16) {
         self.flush();
+        *self
+            .flattening_errors
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
 
         // Bucketer will be reset lazily during rasterization with the active viewport.
         self.clip_context.reset();

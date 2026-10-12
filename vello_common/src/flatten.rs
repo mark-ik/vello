@@ -10,13 +10,196 @@ use alloc::vec::Vec;
 use fearless_simd::{Level, Simd, dispatch};
 use log::warn;
 
-pub use crate::flatten_simd::FlattenCtx;
+pub use crate::flatten_simd::{FlattenCtx, FlattenError, MAX_GENERATED_CURVE_LINES};
 
-// The current tolerance is set to 0.25. Since `sqrt` doesn't work in const contexts, we instead
-// hardcode the squared tolerance and derive the others from that.
-pub(crate) const SQRT_TOL: f64 = 0.5;
+// Device-pixel curve flatness target shared by CPU/GPU sparse geometry and the
+// maintained Classic flattener. A quarter-pixel approximation amplified tiny
+// outline rounding changes into large coverage jumps at subdivision thresholds.
+// 1/256px keeps those jumps below the existing alpha acceptance budget, without
+// changing canonical curve controls, glyph placement, hinting or brush alpha.
+// sqrt(1/256) is exactly representable; derive the squared constants from it.
+pub(crate) const SQRT_TOL: f64 = 1.0 / 16.0;
 pub(crate) const TOL: f64 = SQRT_TOL * SQRT_TOL;
 pub(crate) const TOL_2: f64 = TOL * TOL;
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+    use crate::kurbo::{BezPath, CubicBez, ParamCurve, Point as KurboPoint, QuadBez};
+
+    fn measured_deviation(
+        path: &BezPath,
+        sample: impl Fn(f64) -> KurboPoint,
+        transform: Affine,
+    ) -> (f64, usize) {
+        let mut lines = Vec::new();
+        let mut ctx = FlattenCtx::default();
+        fill(
+            Level::baseline(),
+            path.elements().iter().copied(),
+            transform,
+            &mut lines,
+            &mut ctx,
+            RectU16::new(0, 0, 512, 512),
+        );
+        assert!(!lines.is_empty(), "a visible curve must not disappear");
+        let mut maximum = 0.0f64;
+        for i in 0..=2048 {
+            let p = transform * sample(i as f64 / 2048.0);
+            let nearest = lines
+                .iter()
+                .map(|line| {
+                    let a = KurboPoint::new(f64::from(line.p0.x), f64::from(line.p0.y));
+                    let b = KurboPoint::new(f64::from(line.p1.x), f64::from(line.p1.y));
+                    let d = b - a;
+                    let t = if d.hypot2() == 0.0 {
+                        0.0
+                    } else {
+                        ((p - a).dot(d) / d.hypot2()).clamp(0.0, 1.0)
+                    };
+                    p.distance(a + t * d)
+                })
+                .fold(f64::INFINITY, f64::min);
+            maximum = maximum.max(nearest);
+        }
+        (maximum, lines.len())
+    }
+
+    #[test]
+    fn device_pixel_flatness_preserves_canonical_ellipse_and_transforms() {
+        let k = 0.5522848f64;
+        let curve = CubicBez::new(
+            (19.0, 0.0),
+            (19.0 + 5.0 * k, 0.0),
+            (24.0, 3.0 - 3.0 * k),
+            (24.0, 3.0),
+        );
+        let mut path = BezPath::new();
+        path.move_to(curve.p0);
+        path.curve_to(curve.p1, curve.p2, curve.p3);
+        for transform in [
+            Affine::IDENTITY,
+            Affine::new([1.25, 0.375, -0.2, 2.5, 4.0, 3.0]),
+        ] {
+            let (deviation, lines) = measured_deviation(&path, |t| curve.eval(t), transform);
+            assert!(
+                deviation <= 1.0 / 128.0,
+                "device-space deviation {deviation}"
+            );
+            assert!(
+                lines <= 256,
+                "small canonical curve has bounded output: {lines}"
+            );
+        }
+    }
+
+    #[test]
+    fn tiny_outline_rounding_does_not_trigger_quarter_pixel_chord_loss() {
+        for points in [
+            [(7.21875, 3.8125), (7.21875, 2.046875), (6.359375, 0.890625)],
+            [
+                (7.2255859375, 3.814453125),
+                (7.2255859375, 2.0439453125),
+                (6.3642578125, 0.888671875),
+            ],
+        ] {
+            let curve = QuadBez::new(points[0], points[1], points[2]);
+            let mut path = BezPath::new();
+            path.move_to(curve.p0);
+            path.quad_to(curve.p1, curve.p2);
+            let (deviation, lines) = measured_deviation(&path, |t| curve.eval(t), Affine::IDENTITY);
+            assert!(
+                deviation <= 1.0 / 128.0,
+                "rounded outline deviation {deviation}"
+            );
+            assert!(
+                (3..=256).contains(&lines),
+                "the visible curved edge needs multiple bounded segments: {lines}"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_cubic_keeps_quality_with_fixed_simd_scratch() {
+        let curve = CubicBez::new((8.0, 8.0), (500.0, 500.0), (8.0, 500.0), (500.0, 8.0));
+        let mut path = BezPath::new();
+        path.move_to(curve.p0);
+        path.curve_to(curve.p1, curve.p2, curve.p3);
+        let (deviation, lines) = measured_deviation(&path, |t| curve.eval(t), Affine::IDENTITY);
+        assert!(
+            deviation <= 1.0 / 128.0,
+            "scratch saturation must not degrade device quality: {deviation}"
+        );
+        assert!(
+            lines <= 8192,
+            "large visible cubic output remains bounded: {lines}"
+        );
+    }
+
+    #[test]
+    fn work_refusal_is_typed_sticky_and_requires_explicit_epoch_reset() {
+        let mut path = BezPath::new();
+        for _ in 0..8192 {
+            path.move_to((7.2255859375, 3.814453125));
+            path.quad_to((7.2255859375, 2.0439453125), (6.3642578125, 0.888671875));
+        }
+        let mut lines = Vec::new();
+        let mut ctx = FlattenCtx::default();
+        let bounds = RectU16::new(0, 0, 32, 32);
+        fill(
+            Level::baseline(),
+            path.elements().iter().copied(),
+            Affine::IDENTITY,
+            &mut lines,
+            &mut ctx,
+            bounds,
+        );
+        let refused = ctx
+            .error()
+            .expect("repeated visible curves must hit bounded work");
+        assert!(matches!(
+            refused,
+            FlattenError::LineBudgetExceeded {
+                limit: MAX_GENERATED_CURVE_LINES,
+                ..
+            }
+        ));
+        assert!(
+            lines.is_empty(),
+            "partial failed geometry cannot reach strips"
+        );
+        let mut valid = BezPath::new();
+        valid.move_to((1.0, 1.0));
+        valid.line_to((3.0, 3.0));
+        fill(
+            Level::baseline(),
+            valid.elements().iter().copied(),
+            Affine::IDENTITY,
+            &mut lines,
+            &mut ctx,
+            bounds,
+        );
+        assert_eq!(
+            ctx.error(),
+            Some(refused),
+            "later draws cannot erase a pending refusal"
+        );
+        ctx.clear_error();
+        fill(
+            Level::baseline(),
+            valid.elements().iter().copied(),
+            Affine::IDENTITY,
+            &mut lines,
+            &mut ctx,
+            bounds,
+        );
+        assert_eq!(ctx.error(), None);
+        assert!(
+            !lines.is_empty(),
+            "an explicit new epoch accepts valid geometry"
+        );
+    }
+}
 
 /// A point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -207,6 +390,13 @@ pub fn fill_impl<S: Simd>(
     };
 
     crate::flatten_simd::flatten(simd, path, affine, &mut lb, flatten_ctx, cull_bbox);
+
+    if flatten_ctx.error().is_some() {
+        // No partial curve stream can reach strip generation. The typed error
+        // remains sticky until the owner explicitly resets its frame epoch.
+        line_buf.clear();
+        return;
+    }
 
     // A path that contains NaN is ill-defined, so ignore it.
     if lb.is_nan {

@@ -17,6 +17,10 @@ use crate::{
 use alloc::vec::Vec;
 use bytemuck::{Pod, Zeroable};
 use fearless_simd::*;
+#[path = "flatten_error.rs"]
+mod error;
+use error::MAX_CUBIC_SUBDIVISION_DEPTH;
+pub use error::{FlattenError, MAX_GENERATED_CURVE_LINES};
 
 /// The element of a path made of lines.
 ///
@@ -59,6 +63,10 @@ pub(crate) fn flatten<S: Simd>(
     cull_bbox: RectU16,
 ) {
     flatten_ctx.flattened_cubics.clear();
+    flatten_ctx.generated_lines = 0;
+    if flatten_ctx.error.is_some() {
+        return;
+    }
 
     // For the culling performed here to be correct, the top y coordinate of the cull bbox must be
     // aligned to strip row boundaries. Consider the alternative: for example, a strip row starting
@@ -103,6 +111,9 @@ pub(crate) fn flatten<S: Simd>(
     callback.callback(LinePathEl::MoveTo(start_pt));
 
     for el in path {
+        if flatten_ctx.error.is_some() {
+            return;
+        }
         match affine * el {
             PathEl::MoveTo(p) => {
                 if last_pt != start_pt {
@@ -118,6 +129,13 @@ pub(crate) fn flatten<S: Simd>(
             }
             PathEl::QuadTo(p1, p2) => {
                 let p0 = last_pt;
+                if [p0, p1, p2]
+                    .iter()
+                    .any(|p| !(p.x as f32).is_finite() || !(p.y as f32).is_finite())
+                {
+                    flatten_ctx.fail(FlattenError::NonFiniteCurve);
+                    return;
+                }
                 let line = Line::new(p0, p2);
                 // If the quadratic Bézier is fully to the right, top, or bottom of the culling
                 // bbox, it does not impact pixel coverage or winding. We can ignore it. The
@@ -152,11 +170,17 @@ pub(crate) fn flatten<S: Simd>(
                 else if [p0, p1, p2].into_iter().all(|p| p.x < left)
                     || line.nearest(p1, 0.).distance_sq <= 4. * TOL_2
                 {
+                    if !flatten_ctx.reserve_lines(1) {
+                        return;
+                    }
                     callback.callback(LinePathEl::LineTo(p2));
                 } else {
                     let q = QuadBez::new(p0, p1, p2);
                     let params = q.estimate_subdiv(SQRT_TOL);
                     let n = ((0.5 / SQRT_TOL * params.val).ceil() as usize).max(1);
+                    if !flatten_ctx.reserve_lines(n) {
+                        return;
+                    }
                     let step = 1.0 / (n as f64);
                     for i in 1..n {
                         let u = (i as f64) * step;
@@ -170,6 +194,13 @@ pub(crate) fn flatten<S: Simd>(
             }
             PathEl::CurveTo(p1, p2, p3) => {
                 let p0 = last_pt;
+                if [p0, p1, p2, p3]
+                    .iter()
+                    .any(|p| !(p.x as f32).is_finite() || !(p.y as f32).is_finite())
+                {
+                    flatten_ctx.fail(FlattenError::NonFiniteCurve);
+                    return;
+                }
                 let line = Line::new(p0, p3);
                 // If the cubic Bézier is fully to the right, top, or bottom of the culling bbox,
                 // it does not impact pixel coverage or winding. We can ignore it. The following
@@ -210,14 +241,18 @@ pub(crate) fn flatten<S: Simd>(
                         line.nearest(p2, 0.).distance_sq,
                     ) <= 16. / 9. * TOL_2
                 {
+                    if !flatten_ctx.reserve_lines(1) {
+                        return;
+                    }
                     callback.callback(LinePathEl::LineTo(p3));
                 } else {
-                    let c = CubicBez::new(p0, p1, p2, p3);
-                    let max = flatten_cubic_simd(simd, c, flatten_ctx);
-
-                    for p in &flatten_ctx.flattened_cubics[1..max] {
-                        callback.callback(LinePathEl::LineTo(Point::new(p.x as f64, p.y as f64)));
-                    }
+                    emit_cubic_chunks(
+                        simd,
+                        CubicBez::new(p0, p1, p2, p3),
+                        flatten_ctx,
+                        callback,
+                        [left, top, right, bottom],
+                    );
                 }
                 last_pt = p3;
             }
@@ -340,6 +375,8 @@ const MAX_QUADS: usize = 16;
 /// The context needed for flattening curves.
 #[derive(Default, Debug)]
 pub struct FlattenCtx {
+    error: Option<FlattenError>,
+    generated_lines: usize,
     // The +4 is to encourage alignment; might be better to be explicit
     even_pts: [Point32; MAX_QUADS + 4],
     odd_pts: [Point32; MAX_QUADS],
@@ -351,6 +388,102 @@ pub struct FlattenCtx {
     n_quads: usize,
     /// Reusable buffer for flattened cubic points.
     flattened_cubics: Vec<Point32>,
+}
+
+impl FlattenCtx {
+    /// The first curve quality/work refusal in this frame epoch. Successful
+    /// later paths do not erase an earlier refusal.
+    pub fn error(&self) -> Option<FlattenError> {
+        self.error
+    }
+
+    /// Clear the refusal only when the owner explicitly discards/resets the
+    /// corresponding recorded frame. Scratch capacity is retained.
+    pub fn clear_error(&mut self) {
+        self.error = None;
+        self.generated_lines = 0;
+    }
+
+    fn fail(&mut self, error: FlattenError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+    fn reserve_lines(&mut self, n: usize) -> bool {
+        let requested = self.generated_lines.checked_add(n).unwrap_or(usize::MAX);
+        if requested > MAX_GENERATED_CURVE_LINES {
+            self.fail(FlattenError::LineBudgetExceeded {
+                requested,
+                limit: MAX_GENERATED_CURVE_LINES,
+            });
+            return false;
+        }
+        self.generated_lines = requested;
+        true
+    }
+}
+
+/// Split only cubics that exceed fixed SIMD scratch; never silently clamp the
+/// quadratic approximation. DFS storage and generated output are bounded.
+fn emit_cubic_chunks<S: Simd>(
+    simd: S,
+    initial: CubicBez,
+    ctx: &mut FlattenCtx,
+    callback: &mut impl Callback,
+    bounds: [f64; 4],
+) {
+    let [left, top, right, bottom] = bounds;
+    let mut stack = [(initial, 0usize); MAX_CUBIC_SUBDIVISION_DEPTH + 1];
+    let mut len = 1;
+    while len > 0 {
+        len -= 1;
+        let (curve, depth) = stack[len];
+        let points = [curve.p0, curve.p1, curve.p2, curve.p3];
+        if points
+            .iter()
+            .any(|p| !(p.x as f32).is_finite() || !(p.y as f32).is_finite())
+        {
+            ctx.fail(FlattenError::NonFiniteCurve);
+            return;
+        }
+        if points.iter().all(|p| p.x > right)
+            || points.iter().all(|p| p.y < top)
+            || points.iter().all(|p| p.y > bottom)
+        {
+            callback.callback(LinePathEl::MoveTo(curve.p3));
+            continue;
+        }
+        if points.iter().all(|p| p.x < left) {
+            if !ctx.reserve_lines(1) {
+                return;
+            }
+            callback.callback(LinePathEl::LineTo(curve.p3));
+            continue;
+        }
+        if cubic_quad_error_ratio(curve, TOL as f32) > (MAX_QUADS as f64).powi(6) {
+            if depth == MAX_CUBIC_SUBDIVISION_DEPTH || len + 2 > stack.len() {
+                ctx.fail(FlattenError::SubdivisionDepthExceeded {
+                    limit: MAX_CUBIC_SUBDIVISION_DEPTH,
+                });
+                return;
+            }
+            let (first, second) = curve.subdivide();
+            stack[len] = (second, depth + 1);
+            stack[len + 1] = (first, depth + 1);
+            len += 2;
+            continue;
+        }
+        let max = flatten_cubic_simd(simd, curve, ctx);
+        if ctx.error.is_some() {
+            return;
+        }
+        for p in &ctx.flattened_cubics[1..max] {
+            callback.callback(LinePathEl::LineTo(Point::new(
+                f64::from(p.x),
+                f64::from(p.y),
+            )));
+        }
+    }
 }
 
 #[inline(always)]
@@ -592,6 +725,9 @@ fn flatten_cubic_simd<S: Simd>(simd: S, c: CubicBez, ctx: &mut FlattenCtx) -> us
     estimate_subdiv_simd(simd, sqrt_tol, ctx);
     let sum: f32 = ctx.val[..n_quads].iter().sum();
     let n = ((0.5 * sum / sqrt_tol).ceil() as usize).max(1);
+    if !ctx.reserve_lines(n) {
+        return 0;
+    }
     let target_len = n + 4;
     if target_len > ctx.flattened_cubics.len() {
         ctx.flattened_cubics.resize(target_len, Point32::default());
@@ -625,14 +761,16 @@ fn flatten_cubic_simd<S: Simd>(simd: S, c: CubicBez, ctx: &mut FlattenCtx) -> us
 
 #[inline(always)]
 fn estimate_num_quads(c: CubicBez, accuracy: f32) -> usize {
+    estimate(cubic_quad_error_ratio(c, accuracy))
+}
+
+fn cubic_quad_error_ratio(c: CubicBez, accuracy: f32) -> f64 {
     let q_accuracy = (accuracy * TO_QUAD_TOL) as f64;
     let max_hypot2 = 432.0 * q_accuracy * q_accuracy;
     let p1x2 = c.p1.to_vec2() * 3.0 - c.p0.to_vec2();
     let p2x2 = c.p2.to_vec2() * 3.0 - c.p3.to_vec2();
     let err = (p2x2 - p1x2).hypot2();
-    let err_div = err / max_hypot2;
-
-    estimate(err_div)
+    err / max_hypot2
 }
 
 const TO_QUAD_TOL: f32 = 0.1;

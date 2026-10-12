@@ -24,6 +24,8 @@ enum AtlasProxyAction {
 
 /// State for a render in progress.
 pub struct Render {
+    #[cfg(feature = "debug_layers")]
+    capture_debug: bool,
     fine_wg_count: Option<WorkgroupSize>,
     fine_resources: Option<FineResources>,
     mask_buf: Option<ResourceProxy>,
@@ -122,17 +124,7 @@ pub(crate) fn render_full(
 pub(crate) fn scene_estimate(scene: &Scene) -> Option<BumpAllocators> {
     #[cfg(feature = "bump_estimate")]
     {
-        let memory = scene.bump_estimate(None);
-        Some(BumpAllocators {
-            failed: 0,
-            binning: memory.binning.len(),
-            ptcl: memory.ptcl.len(),
-            tile: memory.tile.len(),
-            seg_counts: memory.seg_counts.len(),
-            segments: memory.segments.len(),
-            blend: 0,
-            lines: memory.lines.len(),
-        })
+        Some(scene.bump_estimate_counts(None))
     }
     #[cfg(not(feature = "bump_estimate"))]
     {
@@ -187,12 +179,21 @@ impl Default for Render {
 impl Render {
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "debug_layers")]
+            capture_debug: false,
             fine_wg_count: None,
             fine_resources: None,
             mask_buf: None,
             #[cfg(feature = "debug_layers")]
             captured_buffers: None,
         }
+    }
+
+    /// Debug capture is opt-in for the async visualization route. Normal quality
+    /// counters do not retain/download the much larger debug line/bbox buffers.
+    #[cfg(feature = "debug_layers")]
+    pub fn enable_debug_capture(&mut self) {
+        self.capture_debug = true;
     }
 
     /// Prepare a recording for the coarse rasterization phase.
@@ -633,7 +634,7 @@ impl Render {
 
         #[cfg(feature = "debug_layers")]
         {
-            if robust {
+            if self.capture_debug {
                 let path_bboxes = *path_bbox_buf.as_buf().unwrap();
                 let lines = *lines_buf.as_buf().unwrap();
                 recording.download(lines);
@@ -724,6 +725,27 @@ impl Render {
         recording.free_resource(fine.info_bin_data_buf);
         recording.free_resource(fine.blend_spill_buf);
         // TODO: make mask buf persistent
+        if let Some(mask_buf) = self.mask_buf.take() {
+            recording.free_resource(mask_buf);
+        }
+    }
+
+    /// Release coarse resources on a typed quality refusal without dispatching fine.
+    pub fn discard_fine(&mut self, recording: &mut Recording) {
+        self.fine_wg_count.take();
+        if let Some(fine) = self.fine_resources.take() {
+            for resource in [
+                fine.config_buf,
+                fine.tile_buf,
+                fine.segments_buf,
+                fine.ptcl_buf,
+                fine.gradient_image,
+                fine.info_bin_data_buf,
+                fine.blend_spill_buf,
+            ] {
+                recording.free_resource(resource);
+            }
+        }
         if let Some(mask_buf) = self.mask_buf.take() {
             recording.free_resource(mask_buf);
         }

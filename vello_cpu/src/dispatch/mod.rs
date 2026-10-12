@@ -16,6 +16,7 @@ use vello_common::paint::{ImageResolver, Paint};
 use vello_common::pixmap::PixmapMut;
 
 pub(crate) trait Dispatcher: Debug + Send {
+    fn flattening_error(&self) -> Option<vello_common::flatten::FlattenError>;
     fn has_layers(&self) -> bool;
     fn fill_path(
         &mut self,

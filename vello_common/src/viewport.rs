@@ -15,6 +15,7 @@ use peniko::Fill;
 /// currently active root viewports.
 #[derive(Debug)]
 pub struct ViewportState {
+    flattening_error: Option<crate::flatten::FlattenError>,
     clip_state: ClipState,
     strip_generator: StripGenerator,
     strip_generator_stack: Vec<StripGenerator>,
@@ -25,6 +26,7 @@ impl ViewportState {
     /// Create a new viewport state.
     pub fn new(width: u16, height: u16, level: Level) -> Self {
         Self {
+            flattening_error: None,
             clip_state: ClipState::new(),
             strip_generator: StripGenerator::new(width, height, level),
             strip_generator_stack: Vec::new(),
@@ -35,6 +37,17 @@ impl ViewportState {
     /// Width of the active viewport.
     pub fn width(&self) -> u16 {
         self.strip_generator.width()
+    }
+
+    /// First geometry refusal, retained even after a filter viewport is popped.
+    pub fn flattening_error(&self) -> Option<crate::flatten::FlattenError> {
+        self.flattening_error
+            .or(self.strip_generator.flattening_error())
+            .or_else(|| {
+                self.strip_generator_stack
+                    .iter()
+                    .find_map(StripGenerator::flattening_error)
+            })
     }
 
     /// Height of the active viewport.
@@ -114,6 +127,7 @@ impl ViewportState {
 
     /// Pop the last root viewport.
     pub fn pop_root_viewport(&mut self) {
+        self.flattening_error = self.flattening_error();
         self.strip_generator = self
             .strip_generator_stack
             .pop()
@@ -124,6 +138,7 @@ impl ViewportState {
 
     /// Reset strip generation and clipping for a new viewport.
     pub fn reset(&mut self, width: u16, height: u16) {
+        self.flattening_error = None;
         self.clip_state.reset();
         self.strip_generator_stack.clear();
         self.strip_generator.reset(width, height);

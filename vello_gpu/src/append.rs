@@ -57,6 +57,8 @@ use crate::scene::{RecordedDraw, Scene};
 /// performed on rejection: the target scene is untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppendSceneError {
+    /// Source or destination has a pending curve-quality refusal.
+    CurveFlattening(vello_common::flatten::FlattenError),
     /// The two scenes have different viewport dimensions.
     ViewportMismatch,
     /// One of the scenes has an unbalanced `push_layer` (the recording
@@ -81,6 +83,7 @@ pub enum AppendSceneError {
 impl fmt::Display for AppendSceneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let msg = match self {
+            Self::CurveFlattening(_) => "a scene has a pending curve flattening refusal",
             Self::ViewportMismatch => "appended scenes must share viewport dimensions",
             Self::OpenLayers => "both scenes must have balanced layers before appending",
             Self::UnsupportedFilterLayers => "appending scenes with filter layers is unsupported",
@@ -109,6 +112,9 @@ impl Scene {
         other: Self,
         translate: Option<(u16, u16)>,
     ) -> Result<(), AppendSceneError> {
+        if let Some(error) = self.flattening_error().or(other.flattening_error()) {
+            return Err(AppendSceneError::CurveFlattening(error));
+        }
         let (dx, dy) = translate.unwrap_or((0, 0));
         if dx % Tile::WIDTH != 0 || dy % Tile::HEIGHT != 0 {
             return Err(AppendSceneError::UnalignedTranslation);
@@ -426,6 +432,48 @@ mod tests {
             .into_iter()
             .collect(),
         ))
+    }
+
+    #[test]
+    fn append_quality_refusal_preserves_destination_and_pending_epoch() {
+        let mut invalid = BezPath::new();
+        invalid.move_to((8.0, 8.0));
+        invalid.curve_to((f64::MAX, 20.0), (30.0, 30.0), (40.0, 40.0));
+        let mut source = Scene::new(W, H);
+        source.fill_path(&invalid);
+        let error = source
+            .flattening_error()
+            .expect("nonfinite device coordinates must refuse");
+        source.fill_rect(&Rect::new(1.0, 1.0, 3.0, 3.0));
+        assert_eq!(source.flattening_error(), Some(error));
+        let mut destination = Scene::new(W, H);
+        record_a(&mut destination);
+        let before = recorder_fingerprint(&destination);
+        let strips_before = format!("{:?}", destination.strip_storage.borrow());
+        assert_eq!(
+            destination.append_scene(source, None),
+            Err(AppendSceneError::CurveFlattening(error))
+        );
+        assert_eq!(recorder_fingerprint(&destination), before);
+        assert_eq!(
+            format!("{:?}", destination.strip_storage.borrow()),
+            strips_before
+        );
+        // An errored destination also refuses before consuming valid source tables.
+        destination.fill_path(&invalid);
+        let before = recorder_fingerprint(&destination);
+        let source = Scene::new(W, H);
+        assert!(matches!(
+            destination.append_scene(source, None),
+            Err(AppendSceneError::CurveFlattening(_))
+        ));
+        assert_eq!(recorder_fingerprint(&destination), before);
+        // Only an explicit reset starts a clean epoch.
+        destination.reset();
+        assert_eq!(destination.flattening_error(), None);
+        let mut source = Scene::new(W, H);
+        source.fill_rect(&Rect::new(1.0, 1.0, 3.0, 3.0));
+        destination.append_scene(source, None).unwrap();
     }
 
     /// Content block A: a solid rect and a filled path.

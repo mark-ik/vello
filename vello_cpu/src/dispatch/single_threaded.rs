@@ -284,6 +284,9 @@ impl SingleThreadedDispatcher {
 }
 
 impl Dispatcher for SingleThreadedDispatcher {
+    fn flattening_error(&self) -> Option<vello_common::flatten::FlattenError> {
+        self.viewport.flattening_error()
+    }
     fn has_layers(&self) -> bool {
         self.recorder.has_layers()
     }

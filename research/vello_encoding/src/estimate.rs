@@ -7,7 +7,10 @@
 use super::{BumpAllocatorMemory, BumpAllocators, Transform};
 use peniko::kurbo::{Cap, Join, PathEl, Point, Stroke, Vec2};
 
-const RSQRT_OF_TOL: f64 = 2.2360679775; // tol = 0.2
+// Preserve the estimator's 20% margin below actual curve tolerance: flattening
+// now targets 1/256px, so estimation uses 1/320px. This increases curved line
+// estimates eightfold while retaining existing allocation limits and recovery.
+const RSQRT_OF_TOL: f64 = 17.88854381999832; // sqrt(320), tol = 1/320
 
 #[derive(Clone, Default)]
 pub struct BumpEstimator {
@@ -47,7 +50,9 @@ impl BumpEstimator {
     /// Combine the counts of this estimator with `other` after applying an optional `transform`.
     pub fn append(&mut self, other: &Self, transform: Option<&Transform>) {
         let scale = transform_scale(transform);
-        self.segments += (other.segments as f64 * scale).ceil() as u32;
+        self.segments = self
+            .segments
+            .saturating_add((other.segments as f64 * scale).ceil() as u32);
         self.lines.add(&other.lines, scale);
     }
 
@@ -57,13 +62,13 @@ impl BumpEstimator {
         t: &Transform,
         stroke: Option<&Stroke>,
     ) {
-        let mut caps = 1;
+        let mut caps: u32 = 1;
         let mut joins: u32 = 0;
-        let mut lineto_lines = 0;
-        let mut fill_close_lines = 1;
-        let mut curve_lines = 0;
-        let mut curve_count = 0;
-        let mut segments = 0;
+        let mut lineto_lines: u32 = 0;
+        let mut fill_close_lines: u32 = 1;
+        let mut curve_lines: u32 = 0;
+        let mut curve_count: u32 = 0;
+        let mut segments: u32 = 0;
 
         // Track the path state to correctly count empty paths and close joins.
         let mut first_pt = None;
@@ -78,25 +83,37 @@ impl BumpEstimator {
                     let Some(point) = last_pt else {
                         continue;
                     };
-                    caps += 1;
+                    caps = caps.saturating_add(1);
                     joins = joins.saturating_sub(1);
-                    fill_close_lines += 1;
-                    segments += count_segments_for_line(first_pt.unwrap(), point, t);
+                    fill_close_lines = fill_close_lines.saturating_add(1);
+                    segments = segments.saturating_add(count_segments_for_line(
+                        first_pt.unwrap(),
+                        point,
+                        t,
+                    ));
                     last_pt = None;
                 }
                 PathEl::ClosePath => {
                     if let Some(last_pt) = last_pt {
-                        joins += 1;
-                        lineto_lines += 1;
-                        segments += count_segments_for_line(first_pt.unwrap(), last_pt, t);
+                        joins = joins.saturating_add(1);
+                        lineto_lines = lineto_lines.saturating_add(1);
+                        segments = segments.saturating_add(count_segments_for_line(
+                            first_pt.unwrap(),
+                            last_pt,
+                            t,
+                        ));
                     }
                     last_pt = first_pt;
                 }
                 PathEl::LineTo(p0) => {
                     last_pt = Some(p0);
-                    joins += 1;
-                    lineto_lines += 1;
-                    segments += count_segments_for_line(first_pt.unwrap(), last_pt.unwrap(), t);
+                    joins = joins.saturating_add(1);
+                    lineto_lines = lineto_lines.saturating_add(1);
+                    segments = segments.saturating_add(count_segments_for_line(
+                        first_pt.unwrap(),
+                        last_pt.unwrap(),
+                        t,
+                    ));
                 }
                 PathEl::QuadTo(p1, p2) => {
                     let Some(p0) = last_pt.or(first_pt) else {
@@ -109,12 +126,12 @@ impl BumpEstimator {
                     let p2 = p2.to_vec2();
                     let lines = offset_fudge * wang::quadratic(RSQRT_OF_TOL, p0, p1, p2, t);
 
-                    curve_lines += lines.ceil() as u32;
-                    curve_count += 1;
-                    joins += 1;
+                    curve_lines = curve_lines.saturating_add(lines.ceil() as u32);
+                    curve_count = curve_count.saturating_add(1);
+                    joins = joins.saturating_add(1);
 
                     let segs = offset_fudge * count_segments_for_quadratic(p0, p1, p2, t);
-                    segments += segs.ceil().max(lines.ceil()) as u32;
+                    segments = segments.saturating_add(segs.ceil().max(lines.ceil()) as u32);
                 }
                 PathEl::CurveTo(p1, p2, p3) => {
                     let Some(p0) = last_pt.or(first_pt) else {
@@ -128,33 +145,47 @@ impl BumpEstimator {
                     let p3 = p3.to_vec2();
                     let lines = offset_fudge * wang::cubic(RSQRT_OF_TOL, p0, p1, p2, p3, t);
 
-                    curve_lines += lines.ceil() as u32;
-                    curve_count += 1;
-                    joins += 1;
+                    curve_lines = curve_lines.saturating_add(lines.ceil() as u32);
+                    curve_count = curve_count.saturating_add(1);
+                    joins = joins.saturating_add(1);
                     let segs = count_segments_for_cubic(p0, p1, p2, p3, t);
-                    segments += segs.ceil().max(lines.ceil()) as u32;
+                    segments = segments.saturating_add(segs.ceil().max(lines.ceil()) as u32);
                 }
             }
         }
 
         let Some(style) = stroke else {
-            self.lines.linetos += lineto_lines + fill_close_lines;
-            self.lines.curves += curve_lines;
-            self.lines.curve_count += curve_count;
-            self.segments += segments;
+            self.lines.linetos = self
+                .lines
+                .linetos
+                .saturating_add(lineto_lines.saturating_add(fill_close_lines));
+            self.lines.curves = self.lines.curves.saturating_add(curve_lines);
+            self.lines.curve_count = self.lines.curve_count.saturating_add(curve_count);
+            self.segments = self.segments.saturating_add(segments);
 
             // Account for the implicit close
             if let (Some(first_pt), Some(last_pt)) = (first_pt, last_pt) {
-                self.segments += count_segments_for_line(first_pt, last_pt, t);
+                self.segments = self
+                    .segments
+                    .saturating_add(count_segments_for_line(first_pt, last_pt, t));
             }
             return;
         };
 
         // For strokes, double-count the lines to estimate offset curves.
-        self.lines.linetos += 2 * lineto_lines;
-        self.lines.curves += 2 * curve_lines;
-        self.lines.curve_count += 2 * curve_count;
-        self.segments += 2 * segments;
+        self.lines.linetos = self
+            .lines
+            .linetos
+            .saturating_add(2_u32.saturating_mul(lineto_lines));
+        self.lines.curves = self
+            .lines
+            .curves
+            .saturating_add(2_u32.saturating_mul(curve_lines));
+        self.lines.curve_count = self
+            .lines
+            .curve_count
+            .saturating_add(2_u32.saturating_mul(curve_count));
+        self.segments = self.segments.saturating_add(2_u32.saturating_mul(segments));
 
         self.count_stroke_caps(style.start_cap, scaled_width, caps);
         self.count_stroke_caps(style.end_cap, scaled_width, caps);
@@ -163,6 +194,12 @@ impl BumpEstimator {
 
     /// Produce the final total, applying an optional transform to all content.
     pub fn tally(&self, transform: Option<&Transform>) -> BumpAllocatorMemory {
+        self.tally_counts(transform).memory()
+    }
+
+    /// Saturating element estimates, before converting counts to byte sizes.
+    /// Render admission checks the line budget before allocating from these counts.
+    pub fn tally_counts(&self, transform: Option<&Transform>) -> BumpAllocators {
         let scale = transform_scale(transform);
 
         // The post-flatten line estimate.
@@ -184,25 +221,43 @@ impl BumpEstimator {
             segments: n_segments,
             lines,
         };
-        bump.memory()
+        bump
     }
 
     fn count_stroke_caps(&mut self, style: Cap, scaled_width: f64, count: u32) {
         match style {
             Cap::Butt => {
-                self.lines.linetos += count;
-                self.segments += count_segments_for_line_length(scaled_width) * count;
+                self.lines.linetos = self.lines.linetos.saturating_add(count);
+                self.segments = self.segments.saturating_add(
+                    count_segments_for_line_length(scaled_width).saturating_mul(count),
+                );
             }
             Cap::Square => {
-                self.lines.linetos += 3 * count;
-                self.segments += count_segments_for_line_length(scaled_width) * count;
-                self.segments += 2 * count_segments_for_line_length(0.5 * scaled_width) * count;
+                self.lines.linetos = self
+                    .lines
+                    .linetos
+                    .saturating_add(3_u32.saturating_mul(count));
+                self.segments = self.segments.saturating_add(
+                    count_segments_for_line_length(scaled_width).saturating_mul(count),
+                );
+                self.segments = self.segments.saturating_add(
+                    count_segments_for_line_length(0.5 * scaled_width)
+                        .saturating_mul(2)
+                        .saturating_mul(count),
+                );
             }
             Cap::Round => {
                 let (arc_lines, line_len) = estimate_arc_lines(scaled_width);
-                self.lines.curves += count * arc_lines;
-                self.lines.curve_count += 1;
-                self.segments += count * arc_lines * count_segments_for_line_length(line_len);
+                self.lines.curves = self
+                    .lines
+                    .curves
+                    .saturating_add(count.saturating_mul(arc_lines));
+                self.lines.curve_count = self.lines.curve_count.saturating_add(count);
+                self.segments = self.segments.saturating_add(
+                    count
+                        .saturating_mul(arc_lines)
+                        .saturating_mul(count_segments_for_line_length(line_len)),
+                );
             }
         }
     }
@@ -210,25 +265,43 @@ impl BumpEstimator {
     fn count_stroke_joins(&mut self, style: Join, scaled_width: f64, miter_limit: f64, count: u32) {
         match style {
             Join::Bevel => {
-                self.lines.linetos += count;
-                self.segments += count_segments_for_line_length(scaled_width) * count;
+                self.lines.linetos = self.lines.linetos.saturating_add(count);
+                self.segments = self.segments.saturating_add(
+                    count_segments_for_line_length(scaled_width).saturating_mul(count),
+                );
             }
             Join::Miter => {
                 let max_miter_len = scaled_width * miter_limit;
-                self.lines.linetos += 2 * count;
-                self.segments += 2 * count * count_segments_for_line_length(max_miter_len);
+                self.lines.linetos = self
+                    .lines
+                    .linetos
+                    .saturating_add(2_u32.saturating_mul(count));
+                self.segments = self.segments.saturating_add(
+                    count
+                        .saturating_mul(2)
+                        .saturating_mul(count_segments_for_line_length(max_miter_len)),
+                );
             }
             Join::Round => {
                 let (arc_lines, line_len) = estimate_arc_lines(scaled_width);
-                self.lines.curves += count * arc_lines;
-                self.lines.curve_count += 1;
-                self.segments += count * arc_lines * count_segments_for_line_length(line_len);
+                self.lines.curves = self
+                    .lines
+                    .curves
+                    .saturating_add(count.saturating_mul(arc_lines));
+                self.lines.curve_count = self.lines.curve_count.saturating_add(count);
+                self.segments = self.segments.saturating_add(
+                    count
+                        .saturating_mul(arc_lines)
+                        .saturating_mul(count_segments_for_line_length(line_len)),
+                );
             }
         }
 
         // Count inner join lines
-        self.lines.linetos += count;
-        self.segments += count_segments_for_line_length(scaled_width) * count;
+        self.lines.linetos = self.lines.linetos.saturating_add(count);
+        self.segments = self
+            .segments
+            .saturating_add(count_segments_for_line_length(scaled_width).saturating_mul(count));
     }
 }
 
@@ -239,11 +312,17 @@ fn estimate_arc_lines(scaled_stroke_width: f64) -> (u32, f64) {
     // option is for all tolerances to be parameters to the estimator as well as the GPU pipelines
     // (the latter could be in the form of a config uniform) which would help to keep them in
     // sync.
-    const MIN_THETA: f64 = 1e-6;
-    const TOL: f64 = 0.25;
+    // The same 20% tolerance margin as Wang's estimates. Account for an entire
+    // semicircular cap/join; quarter-circle counts under-estimate wide round caps.
+    const TOL: f64 = 1.0 / 320.0;
     let radius = TOL.max(scaled_stroke_width * 0.5);
-    let theta = (2. * (1. - TOL / radius).acos()).max(MIN_THETA);
-    let arc_lines = ((std::f64::consts::FRAC_PI_2 / theta).ceil() as u32).max(2);
+    let ratio = TOL / radius;
+    let theta = if ratio < 0.0001 {
+        (8.0 * ratio).sqrt()
+    } else {
+        2.0 * (1.0 - ratio).acos()
+    };
+    let arc_lines = ((std::f64::consts::PI / theta).ceil() as u32).max(2);
     (arc_lines, 2. * theta.sin() * radius)
 }
 
@@ -263,9 +342,9 @@ impl LineSoup {
     fn tally(&self, scale: f64) -> u32 {
         let curves = self
             .scaled_curve_line_count(scale)
-            .max(5 * self.curve_count);
+            .max(5_u32.saturating_mul(self.curve_count));
 
-        self.linetos + curves
+        self.linetos.saturating_add(curves)
     }
 
     fn scaled_curve_line_count(&self, scale: f64) -> u32 {
@@ -273,9 +352,11 @@ impl LineSoup {
     }
 
     fn add(&mut self, other: &Self, scale: f64) {
-        self.linetos += other.linetos;
-        self.curves += other.scaled_curve_line_count(scale);
-        self.curve_count += other.curve_count;
+        self.linetos = self.linetos.saturating_add(other.linetos);
+        self.curves = self
+            .curves
+            .saturating_add(other.scaled_curve_line_count(scale));
+        self.curve_count = self.curve_count.saturating_add(other.curve_count);
     }
 }
 
@@ -398,5 +479,80 @@ mod wang {
         let v2 = transform(t, v2);
         let m = v1.length().max(v2.length());
         (SQRT_OF_DEGREE_TERM_CUBIC * m.sqrt() * rsqrt_of_tol).ceil()
+    }
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+
+    #[test]
+    fn downscaled_round_subpaths_keep_minimum_generated_work() {
+        const SUBPATHS: u32 = 100;
+        let mut path = Vec::new();
+        for i in 0..SUBPATHS {
+            let x = f64::from(i) * 4.0;
+            path.push(PathEl::MoveTo(Point::new(x, 0.0)));
+            path.push(PathEl::LineTo(Point::new(x + 1.0, 1.0)));
+        }
+        let mut source = BumpEstimator::new();
+        source.count_path(
+            path.into_iter(),
+            &Transform::from_kurbo(&peniko::kurbo::Affine::IDENTITY),
+            Some(
+                &Stroke::new(1.0)
+                    .with_caps(Cap::Round)
+                    .with_join(Join::Round),
+            ),
+        );
+        let mut appended = BumpEstimator::new();
+        appended.append(
+            &source,
+            Some(&Transform::from_kurbo(&peniko::kurbo::Affine::scale(1e-12))),
+        );
+        // Each nonzero open line retains two stroke sides and at least one line
+        // for each semicircular cap even when the scene is appended at tiny scale.
+        assert!(appended.tally_counts(None).lines >= 4 * SUBPATHS);
+    }
+
+    #[test]
+    fn finite_huge_estimates_saturate_without_wrapping_or_allocating() {
+        let mut estimator = BumpEstimator::new();
+        let path = [
+            PathEl::MoveTo(Point::new(0.0, 0.0)),
+            PathEl::CurveTo(
+                Point::new(0.0, 1e30),
+                Point::new(1e30, 1e30),
+                Point::new(1e30, 0.0),
+            ),
+        ];
+        let stroke = Stroke::new(1e30)
+            .with_caps(Cap::Round)
+            .with_join(Join::Round);
+        estimator.count_path(
+            path.into_iter(),
+            &Transform::from_kurbo(&peniko::kurbo::Affine::IDENTITY),
+            Some(&stroke),
+        );
+        estimator.append(&estimator.clone(), None);
+        let counts = estimator.tally_counts(None);
+        assert_eq!(counts.lines, u32::MAX);
+        assert_eq!(counts.segments, u32::MAX);
+        // Public byte statistics also remain safe; these counts cannot be admitted.
+        assert_eq!(estimator.tally(None).total, u32::MAX);
+    }
+
+    #[test]
+    fn round_arc_estimate_covers_semicircle_at_device_pixel_quality() {
+        for radius in [0.25, 1.0, 50.0, 1000.0, 1e12] {
+            let (lines, _) = estimate_arc_lines(radius * 2.0);
+            let step = std::f64::consts::PI / f64::from(lines);
+            // Stable sagitta evaluation avoids subtracting nearly equal values.
+            let deviation = 2.0 * radius * (step * 0.25).sin().powi(2);
+            assert!(
+                deviation <= 1.0 / 256.0,
+                "radius {radius}, {lines} lines, sagitta {deviation}"
+            );
+        }
     }
 }

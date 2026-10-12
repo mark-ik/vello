@@ -800,11 +800,33 @@ impl RenderContext {
         self.dispatcher.flush();
     }
 
+    /// First bounded curve-quality refusal in this frame. For multithreaded
+    /// contexts, call `flush` first so pending worker results have arrived.
+    /// Explicit `reset` starts a new error epoch; later draws do not clear it.
+    pub fn flattening_error(&self) -> Option<vello_common::flatten::FlattenError> {
+        self.dispatcher.flattening_error()
+    }
+
     /// Render the current context into a target using default rasterizer settings.
     ///
     /// See the documentation of [`RenderContext::render_with`] for more information.
     pub fn render<'a>(&self, target: impl Into<PixmapMut<'a>>, resources: &mut Resources) {
         self.render_with(target, resources, RasterizerSettings::default());
+    }
+
+    /// Render only if this flushed recording has no curve-quality refusal.
+    /// On refusal, the target and raster resources are untouched. For threaded
+    /// contexts call [`Self::flush`] first, as with ordinary rendering.
+    pub fn render_checked<'a>(
+        &self,
+        target: impl Into<PixmapMut<'a>>,
+        resources: &mut Resources,
+    ) -> Result<(), vello_common::flatten::FlattenError> {
+        if let Some(error) = self.flattening_error() {
+            return Err(error);
+        }
+        self.render(target, resources);
+        Ok(())
     }
 
     /// Render the current context into a target using custom rasterizer settings.
@@ -846,6 +868,10 @@ impl RenderContext {
         resources: &mut Resources,
         settings: RasterizerSettings,
     ) {
+        if let Some(error) = self.flattening_error() {
+            log::error!("CPU rendering refused due to curve flattening: {error}");
+            return;
+        }
         // TODO: Maybe we should move those checks into the dispatcher.
         assert!(
             !self.dispatcher.has_layers(),
@@ -1335,6 +1361,48 @@ mod tests {
 
         assert!(pixmap.may_have_transparency());
         assert_eq!(pixmap.sample(0, 0), clear_color.premultiply().to_rgba8());
+    }
+
+    fn verify_curve_refusal(mut ctx: RenderContext) {
+        let mut path = vello_common::kurbo::BezPath::new();
+        path.move_to((8.0, 8.0));
+        path.curve_to((f64::MAX, 20.0), (30.0, 30.0), (40.0, 40.0));
+        ctx.fill_path(&path);
+        ctx.fill_rect(&Rect::new(0.0, 0.0, 4.0, 4.0));
+        ctx.flush();
+        let error = ctx
+            .flattening_error()
+            .expect("curve refusal survives later valid draws and worker completion");
+        let mut pixmap = solid_pixmap(64, 64, GRAY);
+        let original = pixmap.data().to_vec();
+        let mut resources = Resources::new();
+        assert_eq!(ctx.render_checked(&mut pixmap, &mut resources), Err(error));
+        assert_eq!(pixmap.data(), original);
+        ctx.reset();
+        ctx.set_paint(RED);
+        ctx.fill_rect(&Rect::new(0.0, 0.0, 64.0, 64.0));
+        ctx.flush();
+        assert_eq!(ctx.flattening_error(), None);
+        ctx.render_checked(&mut pixmap, &mut resources).unwrap();
+        assert_ne!(pixmap.data(), original);
+    }
+
+    #[test]
+    fn curve_refusal_preserves_target_until_explicit_reset() {
+        verify_curve_refusal(RenderContext::new(64, 64));
+    }
+
+    #[cfg(feature = "multithreading")]
+    #[test]
+    fn multithreaded_curve_refusal_survives_flush_and_resets_explicitly() {
+        verify_curve_refusal(RenderContext::new_with(
+            64,
+            64,
+            crate::RenderSettings {
+                num_threads: 2,
+                ..Default::default()
+            },
+        ));
     }
 
     #[cfg(feature = "multithreading")]

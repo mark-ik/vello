@@ -7,6 +7,9 @@ const STAGE_TILE_ALLOC: u32 = 0x2u;
 const STAGE_FLATTEN: u32 = 0x4u;
 const STAGE_PATH_COUNT: u32 = 0x8u;
 const STAGE_COARSE: u32 = 0x10u;
+// A bounded-quality refusal cannot be fixed by growing memory. Keep the bit
+// separate while also setting STAGE_FLATTEN so later stages abort atomically.
+const STAGE_FLATTEN_QUALITY: u32 = 0x20u;
 
 // This must be kept in sync with the struct in config.rs in the encoding crate.
 struct BumpAllocators {

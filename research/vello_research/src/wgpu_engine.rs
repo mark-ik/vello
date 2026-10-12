@@ -33,6 +33,7 @@ pub(crate) struct WgpuEngine {
     pool: ResourcePool,
     bind_map: BindMap,
     downloads: HashMap<ResourceId, Buffer>,
+    cpu_downloads: HashMap<ResourceId, Vec<u8>>,
     #[cfg(not(target_arch = "wasm32"))]
     shaders_to_initialise: Option<Vec<UninitialisedShader>>,
     pub(crate) use_cpu: bool,
@@ -716,14 +717,23 @@ impl WgpuEngine {
                     profiler.end_query(&mut rpass, query);
                 }
                 Command::Download(proxy) => {
-                    let src_buf = self
-                        .bind_map
-                        .get_gpu_buf(proxy.id)
-                        .ok_or(Error::UnavailableBufferUsed(proxy.name, "download"))?;
-                    let usage = BufferUsages::MAP_READ | BufferUsages::COPY_DST;
-                    let buf = self.pool.get_buf(proxy.size, "download", usage, device);
-                    encoder.copy_buffer_to_buffer(src_buf, 0, &buf, 0, proxy.size);
-                    self.downloads.insert(proxy.id, buf);
+                    if let Some(BindMapBuffer {
+                        buffer: MaterializedBuffer::Cpu(bytes),
+                        ..
+                    }) = self.bind_map.buf_map.get(&proxy.id)
+                    {
+                        // CPU dispatch owns these counters. Snapshot at the same point as GPU download.
+                        self.cpu_downloads.insert(proxy.id, bytes.borrow().clone());
+                    } else {
+                        let src_buf = self
+                            .bind_map
+                            .get_gpu_buf(proxy.id)
+                            .ok_or(Error::UnavailableBufferUsed(proxy.name, "download"))?;
+                        let usage = BufferUsages::MAP_READ | BufferUsages::COPY_DST;
+                        let buf = self.pool.get_buf(proxy.size, "download", usage, device);
+                        encoder.copy_buffer_to_buffer(src_buf, 0, &buf, 0, proxy.size);
+                        self.downloads.insert(proxy.id, buf);
+                    }
                 }
                 Command::Clear(proxy, offset, size) => {
                     if let Some(buf) = self.bind_map.get_buf(*proxy) {
@@ -780,7 +790,12 @@ impl WgpuEngine {
         self.downloads.get(&buf.id)
     }
 
+    pub fn get_cpu_download(&self, buf: BufferProxy) -> Option<&[u8]> {
+        self.cpu_downloads.get(&buf.id).map(Vec::as_slice)
+    }
+
     pub fn free_download(&mut self, buf: BufferProxy) {
+        self.cpu_downloads.remove(&buf.id);
         self.downloads.remove(&buf.id);
     }
 

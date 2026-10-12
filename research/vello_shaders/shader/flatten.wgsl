@@ -83,6 +83,31 @@ const DERIV_THRESH_SQUARED: f32 = DERIV_THRESH * DERIV_THRESH;
 const DERIV_EPS: f32 = 1e-6;
 // Limit for subdivision of cubic Béziers.
 const SUBDIV_LIMIT: f32 = 1.0 / 65536.0;
+// Device-pixel flatness target; keep CPU fallback and sparse common in sync.
+const CURVE_FLATNESS: f32 = 1.0 / 256.0;
+const MAX_CURVE_LINES: u32 = 65536u;
+const MAX_FLATTEN_LINES: u32 = 16777216u;
+
+// A quality refusal also stops the existing downstream flatten-dependent stages.
+// It is distinct from allocation failure and must never trigger a quality downgrade.
+fn refuse_curve() {
+    atomicOr(&bump.failed, STAGE_FLATTEN | STAGE_FLATTEN_QUALITY);
+}
+// Prevent global u32 wrap even when many individually bounded curves are admitted.
+fn reserve_lines(count: u32) -> u32 {
+    loop {
+        let old = atomicLoad(&bump.lines);
+        if old > MAX_FLATTEN_LINES || count > MAX_FLATTEN_LINES - old {
+            refuse_curve();
+            return 0xffffffffu;
+        }
+        let result = atomicCompareExchangeWeak(&bump.lines, old, old + count);
+        if result.exchanged { return old; }
+    }
+    // Explicit terminator for validators that do not infer loop return coverage.
+    return 0xffffffffu;
+}
+
 // Robust ESPC computation: below this value, treat curve as circular arc
 const K1_THRESH: f32 = 1e-3;
 // Robust ESPC: below this value, evaluate ES rather than parallel curve
@@ -373,7 +398,7 @@ fn flatten_euler(
         return;
     }
 
-    let tol = 0.25;
+    let tol = CURVE_FLATNESS;
     var t0_u = 0u;
     var dt = 1.0;
     var last_p = p0;
@@ -383,6 +408,7 @@ fn flatten_euler(
     }
     var last_t = 0.0;
     var lp0 = t_start;
+    var emitted_lines = 0u;
     loop {
         let t0 = f32(t0_u) * dt;
         if t0 == 1.0 {
@@ -402,7 +428,7 @@ fn flatten_euler(
         }
         let actual_dt = t1 - last_t;
         let cubic_params = cubic_from_points_derivs(this_p0, this_pq1.point, this_q0, this_pq1.deriv, actual_dt);
-        if cubic_params.err * scale <= tol || dt <= SUBDIV_LIMIT {
+        if cubic_params.err * scale <= tol {
             let euler_params = es_params_from_angles(cubic_params.th0, cubic_params.th1);
             let es = es_seg_from_params(this_p0, this_pq1.point, euler_params);
             let k0 = es.params.k0 - 0.5 * es.params.k1;
@@ -438,10 +464,16 @@ fn flatten_euler(
                 let integrand_peak = sqrt(abs(k_peak * (k_peak * dist_scaled + 1.0)));
                 n_frac = integral * integrand_peak / a;
             }
-            // Bound number of subdivisions to a reasonable number when the scale is huge.
-            // This may give slightly incorrect rendering but avoids hangs.
-            // TODO: aggressively cull to viewport
-            let n = clamp(ceil(n_frac * scale_multiplier), 1.0, 100.0);
+            let requested = n_frac * scale_multiplier;
+            let n = max(ceil(requested), 1.0);
+            // The comparisons also reject NaN and infinity before conversion.
+            if !(requested >= 0.0 && n <= f32(MAX_CURVE_LINES - emitted_lines)) {
+                refuse_curve();
+                return;
+            }
+            emitted_lines += u32(n);
+            let first_line = reserve_lines(u32(n));
+            if first_line == 0xffffffffu { return; }
             for (var i = 0u; i < u32(n); i++) {
                 var lp1: vec2f;
                 if i + 1u == u32(n) && t1 == 1.0 {
@@ -463,7 +495,7 @@ fn flatten_euler(
                 }
                 let l0 = select(lp1, lp0, offset >= 0.);
                 let l1 = select(lp0, lp1, offset >= 0.);
-                output_line_with_transform(path_ix, l0, l1, transform);
+                write_line_with_transform(first_line + i, path_ix, l0, l1, transform);
                 lp0 = lp1;
             }
             last_p = this_pq1.point;
@@ -474,6 +506,10 @@ fn flatten_euler(
             t0_u >>= shift;
             dt *= f32(1u << shift);
         } else {
+            if dt <= SUBDIV_LIMIT {
+                refuse_curve();
+                return;
+            }
             t0_u = t0_u * 2u;
             dt *= 0.5;
         }
@@ -497,19 +533,33 @@ fn flatten_arc(
     var p0 = transform_apply(transform, begin);
     var r = begin - center;
 
-    let MIN_THETA = 0.0001;
-    let tol = 0.25;
-    let radius = max(tol, length(p0 - transform_apply(transform, center)));
-    let theta = max(MIN_THETA, 2. * acos(1. - tol / radius));
-
-    // Always output at least one line so that we always draw the chord.
-    let n_lines = max(1u, u32(ceil(angle / theta)));
+    let tol = CURVE_FLATNESS;
+    let mat = transform.mat;
+    let scale = 0.5 * (length(vec2(mat.x + mat.w, mat.y - mat.z)) +
+                      length(vec2(mat.x - mat.w, mat.y + mat.z)));
+    let radius = max(tol, length(r) * scale);
+    let ratio = tol / radius;
+    // Stable conservative angle when acos(1-ratio) would round to zero.
+    var theta: f32;
+    if ratio < 0.0001 {
+        theta = sqrt(8.0 * ratio);
+    } else {
+        theta = 2.0 * acos(1.0 - ratio);
+    }
+    let requested = angle / theta;
+    let n = max(1.0, ceil(requested));
+    if !(requested >= 0.0 && n <= f32(MAX_CURVE_LINES)) {
+        refuse_curve();
+        return;
+    }
+    let n_lines = u32(n);
 
     let c = cos(theta);
     let s = sin(theta);
     let rot = mat2x2(c, -s, s, c);
 
-    let line_ix = atomicAdd(&bump.lines, n_lines);
+    let line_ix = reserve_lines(n_lines);
+    if line_ix == 0xffffffffu { return; }
     for (var i = 0u; i < n_lines - 1u; i += 1u) {
         r = rot * r;
         let p1 = transform_apply(transform, center + r);
@@ -533,7 +583,8 @@ fn draw_cap(
     var start = cap0;
     var end = cap1;
     let is_square = (cap_style == STYLE_FLAGS_CAP_SQUARE);
-    let line_ix = atomicAdd(&bump.lines, select(1u, 3u, is_square));
+    let line_ix = reserve_lines(select(1u, 3u, is_square));
+    if line_ix == 0xffffffffu { return; }
     if is_square {
         let v = offset_tangent;
         let p0 = start + v;
@@ -592,7 +643,8 @@ fn draw_join(
                 let h = (tan_prev.x * v.y - tan_prev.y * v.x) / cr;
                 let miter_pt = fp_this - tan_next * h;
 
-                line_ix = atomicAdd(&bump.lines, 3u);
+                line_ix = reserve_lines(3u);
+                if line_ix == 0xffffffffu { return; }
                 write_line_with_transform(line_ix, path_ix, p, miter_pt, transform);
                 line_ix += 1u;
 
@@ -602,7 +654,8 @@ fn draw_join(
                     front0 = miter_pt;
                 }
             } else {
-                line_ix = atomicAdd(&bump.lines, 2u);
+                line_ix = reserve_lines(2u);
+                if line_ix == 0xffffffffu { return; }
             }
             write_line_with_transform(line_ix, path_ix, front0, front1, transform);
             write_line_with_transform(line_ix + 1u, path_ix, back0, back1, transform);
@@ -780,12 +833,12 @@ fn write_line_with_transform(line_ix: u32, path_ix: u32, p0: vec2f, p1: vec2f, t
 }
 
 fn output_line(path_ix: u32, p0: vec2f, p1: vec2f) {
-    let line_ix = atomicAdd(&bump.lines, 1u);
+    let line_ix = reserve_lines(1u);
     write_line(line_ix, path_ix, p0, p1);
 }
 
 fn output_line_with_transform(path_ix: u32, p0: vec2f, p1: vec2f, transform: Transform) {
-    let line_ix = atomicAdd(&bump.lines, 1u);
+    let line_ix = reserve_lines(1u);
     write_line_with_transform(line_ix, path_ix, p0, p1, transform);
 }
 
@@ -795,7 +848,8 @@ fn output_two_lines_with_transform(
     p10: vec2f, p11: vec2f,
     transform: Transform
 ) {
-    let line_ix = atomicAdd(&bump.lines, 2u);
+    let line_ix = reserve_lines(2u);
+    if line_ix == 0xffffffffu { return; }
     write_line_with_transform(line_ix, path_ix, p00, p01, transform);
     write_line_with_transform(line_ix + 1u, path_ix, p10, p11, transform);
 }

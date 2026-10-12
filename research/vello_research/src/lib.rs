@@ -302,6 +302,22 @@ pub enum Error {
     #[doc(hidden)] // End-users of Vello should not have `wgpu-profiler` enabled.
     ProfilerCreationError(#[from] wgpu_profiler::CreationError),
 
+    /// A curve cannot meet the device-pixel quality target within bounded work.
+    #[error("Curve flattening exceeded the bounded quality workload")]
+    CurveFlatteningLimit,
+    /// Conservative curve estimate exceeds the admitted line-work bound.
+    #[error("Curve estimate {lines} exceeds the admitted line workload {limit}")]
+    CurveEstimateLimit { lines: u32, limit: usize },
+    /// Every submitted GPU frame must retain its quality counters until observed.
+    #[error("Curve quality readback backlog is full ({limit} frames)")]
+    CurveQualityReadbackBacklog { limit: usize },
+    /// Quality counters could not be observed; the frame is not qualified.
+    #[error("Curve quality counter readback failed")]
+    CurveQualityReadbackFailed,
+    /// Shader replacement must not discard pending frame results.
+    #[error("Cannot replace shaders with {pending} quality readbacks pending")]
+    CurveQualityReadbacksPending { pending: usize },
+
     /// Failed to compile the shaders.
     #[cfg(feature = "hot_reload")]
     #[error("Failed to compile shaders:\n{0}")]
@@ -322,6 +338,7 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 /// This is an assumption which is known to be limiting, and is planned to change.
 #[cfg(feature = "wgpu")]
 pub struct Renderer {
+    #[cfg(feature = "hot_reload")]
     options: RendererOptions,
     engine: WgpuEngine,
     resolver: Resolver,
@@ -331,8 +348,9 @@ pub struct Renderer {
     /// counters. Frames are sized to it, so a scene that outgrew the fixed
     /// defaults can recover once its counters have been read back.
     high_water: BumpAllocators,
-    /// The last frame's bump counters, on their way back from the GPU.
-    pending_bump: Option<PendingBump>,
+    /// Every submitted frame's counters, bounded until the host observes them.
+    pending_bump: std::collections::VecDeque<PendingBump>,
+    pending_bump_bytes: u64,
     #[cfg(feature = "debug_layers")]
     debug: debug::DebugRenderer,
     #[cfg(feature = "wgpu-profiler")]
@@ -444,13 +462,15 @@ impl Renderer {
         let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
 
         Ok(Self {
+            #[cfg(feature = "hot_reload")]
             options,
             engine,
             resolver: Resolver::new(),
             image_atlas: None,
             shaders,
             high_water: BumpAllocators::default(),
-            pending_bump: None,
+            pending_bump: std::collections::VecDeque::new(),
+            pending_bump_bytes: 0,
             #[cfg(feature = "debug_layers")]
             debug,
             #[cfg(feature = "wgpu-profiler")]
@@ -482,11 +502,14 @@ impl Renderer {
         texture: &TextureView,
         params: &RenderParams,
     ) -> Result<()> {
-        self.collect_bump(device);
-        let floor = self.floor(scene);
-        // One readback at a time: a frame recorded while one is out skips its own.
-        // CPU shaders keep the counters off the GPU, where no download reaches.
-        let robust = self.pending_bump.is_none() && !self.options.use_cpu;
+        self.poll_curve_quality(device)?;
+        if self.pending_bump.len() >= MAX_PENDING_QUALITY_FRAMES {
+            return Err(Error::CurveQualityReadbackBacklog {
+                limit: MAX_PENDING_QUALITY_FRAMES,
+            });
+        }
+        let floor = self.floor(scene)?;
+        let robust = true;
         let (recording, target, bump) = render::render_full(
             scene,
             &mut self.resolver,
@@ -510,9 +533,7 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             &mut self.profiler,
         )?;
-        if robust {
-            self.start_bump_readback(bump);
-        }
+        self.start_bump_readback(bump)?;
         // N.B. This is horrible; this integration of wgpu-profiler really needs some work...
         #[cfg(feature = "wgpu-profiler")]
         {
@@ -620,6 +641,12 @@ impl Renderer {
     #[cfg(feature = "hot_reload")]
     #[doc(hidden)] // End-users of Vello should not have `hot_reload` enabled.
     pub async fn reload_shaders(&mut self, device: &Device) -> Result<(), Error> {
+        self.poll_curve_quality(device)?;
+        if !self.pending_bump.is_empty() {
+            return Err(Error::CurveQualityReadbacksPending {
+                pending: self.pending_bump.len(),
+            });
+        }
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut engine = WgpuEngine::new(self.options.use_cpu, self.options.pipeline_cache.clone());
         // We choose not to initialise these shaders in parallel, to ensure the error scope works correctly
@@ -737,12 +764,12 @@ impl Renderer {
         params: &RenderParams,
     ) -> Result<RenderResult> {
         let mut render = Render::new();
+        #[cfg(feature = "debug_layers")]
+        render.enable_debug_capture();
         let encoding = scene.encoding();
-        // TODO: turn this on; the download feature interacts with CPU dispatch.
-        // Currently this is always enabled when the `debug_layers` setting is enabled as the bump
-        // counts are used for debug visualiation.
-        let robust = cfg!(feature = "debug_layers");
-        let floor = self.floor(scene);
+        self.poll_curve_quality(device)?;
+        let robust = true;
+        let floor = self.floor(scene)?;
         let recording = render.render_encoding_coarse_sized(
             encoding,
             &mut self.resolver,
@@ -768,17 +795,45 @@ impl Renderer {
         )?;
 
         let mut bump: Option<BumpAllocators> = None;
-        if let Some(bump_buf) = self.engine.get_download(bump_buf) {
+        if let Some(bytes) = self.engine.get_cpu_download(bump_buf) {
+            bump = parse_bump(bytes);
+        } else if let Some(bump_buf) = self.engine.get_download(bump_buf) {
             let buf_slice = bump_buf.slice(..);
             let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
             buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-            receiver.receive().await.expect("channel was closed")?;
-            let mapped = buf_slice.get_mapped_range().unwrap();
-            bump = Some(bytemuck::pod_read_unaligned(&mapped));
+            if matches!(receiver.receive().await, Some(Ok(()))) {
+                bump = buf_slice
+                    .get_mapped_range()
+                    .ok()
+                    .and_then(|mapped| parse_bump(&mapped));
+                bump_buf.unmap();
+            }
         }
         // TODO: apply logic to determine whether we need to rerun coarse, and also
         // allocate the blend stack as needed.
         self.engine.free_download(bump_buf);
+        let quality = bump
+            .ok_or(Error::CurveQualityReadbackFailed)
+            .and_then(|needed| self.accept_bump(needed));
+        if let Err(error) = quality {
+            let mut cleanup = Recording::default();
+            render.discard_fine(&mut cleanup);
+            #[cfg(feature = "debug_layers")]
+            if let Some(captured) = captured {
+                self.engine.free_download(captured.lines);
+                captured.release_buffers(&mut cleanup);
+            }
+            self.engine.run_recording(
+                device,
+                queue,
+                &cleanup,
+                &[],
+                "quality refusal cleanup",
+                #[cfg(feature = "wgpu-profiler")]
+                &mut self.profiler,
+            )?;
+            return Err(error);
+        }
         // Maybe clear to reuse allocation?
         let mut recording = Recording::default();
         render.record_fine(&self.shaders, &mut recording);
@@ -825,68 +880,95 @@ impl<'a> DebugDownloads<'a> {
     }
 }
 
+#[cfg(feature = "wgpu")]
+const MAX_PENDING_QUALITY_FRAMES: usize = 256;
+
+#[cfg(feature = "wgpu")]
+fn parse_bump(bytes: &[u8]) -> Option<BumpAllocators> {
+    (bytes.len() >= size_of::<BumpAllocators>())
+        .then(|| bytemuck::pod_read_unaligned(&bytes[..size_of::<BumpAllocators>()]))
+}
+
 /// A frame's bump counters being read back without waiting for them.
 #[cfg(feature = "wgpu")]
 struct PendingBump {
     buffer: recording::BufferProxy,
     /// 0 while mapping, 1 once mapped, 2 if the map failed.
     state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    bytes: u64,
 }
 
 #[cfg(feature = "wgpu")]
 impl Renderer {
     /// The elements each dynamic buffer must hold this frame: what earlier
     /// frames needed, and the scene's own estimate where that is larger.
-    fn floor(&self, scene: &Scene) -> BumpAllocators {
+    fn floor(&self, scene: &Scene) -> Result<BumpAllocators> {
         let mut floor = self.high_water;
         if let Some(estimate) = render::scene_estimate(scene) {
+            validate_curve_estimate(&estimate)?;
             raise(&mut floor, &estimate, |count| count);
         }
-        floor
+        Ok(floor)
     }
 
-    /// Take the last frame's counters, if they have arrived, and raise the
-    /// high-water mark to what that frame needed with a quarter again of
-    /// headroom. A native device maps on poll; a browser maps from its own
-    /// event loop, so the counters may take a few frames to land.
-    fn collect_bump(&mut self, device: &Device) {
-        let Some(pending) = self.pending_bump.take() else {
-            return;
-        };
-        let _ = device.poll(wgpu::PollType::Poll);
-        match pending.state.load(std::sync::atomic::Ordering::Acquire) {
-            0 => {
-                self.pending_bump = Some(pending);
-                return;
+    /// Observe completed quality counters without waiting. Normal GPU submission returns
+    /// before these counters arrive; call this again after the host's bounded device/event
+    /// loop wait to qualify the final frame. A failed frame is never a successful receipt.
+    pub fn poll_curve_quality(&mut self, device: &Device) -> Result<()> {
+        if device.poll(wgpu::PollType::Poll).is_err() {
+            // Device loss makes every pending frame unqualified; retire all counter buffers.
+            for pending in self.pending_bump.drain(..) {
+                self.engine.free_download(pending.buffer);
             }
-            1 => {
-                if let Some(buffer) = self.engine.get_download(pending.buffer) {
-                    let slice = buffer.slice(..);
-                    let needed = slice.get_mapped_range().ok().and_then(|range| {
-                        (range.len() >= size_of::<BumpAllocators>()).then(|| {
-                            bytemuck::pod_read_unaligned::<BumpAllocators>(
-                                &range[..size_of::<BumpAllocators>()],
-                            )
-                        })
-                    });
-                    buffer.unmap();
-                    if let Some(needed) = needed {
-                        raise(&mut self.high_water, &needed, |count| {
-                            count.saturating_add(count / 4)
-                        });
-                    }
-                }
-            }
-            _ => {}
+            self.pending_bump_bytes = 0;
+            return Err(Error::CurveQualityReadbackFailed);
         }
-        self.engine.free_download(pending.buffer);
+        while let Some(pending) = self.pending_bump.front() {
+            let state = pending.state.load(std::sync::atomic::Ordering::Acquire);
+            if state == 0 {
+                break;
+            }
+            let pending = self.pending_bump.pop_front().unwrap();
+            let needed = if state == 1 {
+                self.engine.get_download(pending.buffer).and_then(|buffer| {
+                    let needed = buffer
+                        .slice(..)
+                        .get_mapped_range()
+                        .ok()
+                        .and_then(|range| parse_bump(&range));
+                    buffer.unmap();
+                    needed
+                })
+            } else {
+                None
+            };
+            self.engine.free_download(pending.buffer);
+            self.pending_bump_bytes -= pending.bytes;
+            self.accept_bump(needed.ok_or(Error::CurveQualityReadbackFailed)?)?;
+        }
+        Ok(())
     }
 
-    /// Start reading this frame's counters back, without waiting for them.
-    fn start_bump_readback(&mut self, buffer: recording::BufferProxy) {
-        let Some(download) = self.engine.get_download(buffer) else {
-            return;
-        };
+    /// Pending counter buffers and their exact byte accounting (not renderer working buffers).
+    pub fn pending_curve_quality(&self) -> (usize, u64) {
+        (self.pending_bump.len(), self.pending_bump_bytes)
+    }
+
+    fn accept_bump(&mut self, needed: BumpAllocators) -> Result<()> {
+        accept_quality_counters(&mut self.high_water, needed)
+    }
+
+    fn start_bump_readback(&mut self, buffer: recording::BufferProxy) -> Result<()> {
+        if let Some(bytes) = self.engine.get_cpu_download(buffer) {
+            let needed = parse_bump(bytes);
+            self.engine.free_download(buffer);
+            return self.accept_bump(needed.ok_or(Error::CurveQualityReadbackFailed)?);
+        }
+        let download = self
+            .engine
+            .get_download(buffer)
+            .ok_or(Error::CurveQualityReadbackFailed)?;
+        let bytes = download.size();
         let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let flag = state.clone();
         download
@@ -897,7 +979,97 @@ impl Renderer {
                     std::sync::atomic::Ordering::Release,
                 );
             });
-        self.pending_bump = Some(PendingBump { buffer, state });
+        self.pending_bump_bytes += bytes;
+        self.pending_bump.push_back(PendingBump {
+            buffer,
+            state,
+            bytes,
+        });
+        Ok(())
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn validate_curve_estimate(estimate: &BumpAllocators) -> Result<()> {
+    if estimate.lines as usize > vello_encoding::MAX_FLATTEN_LINES {
+        return Err(Error::CurveEstimateLimit {
+            lines: estimate.lines,
+            limit: vello_encoding::MAX_FLATTEN_LINES,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "wgpu")]
+fn accept_quality_counters(high_water: &mut BumpAllocators, needed: BumpAllocators) -> Result<()> {
+    if needed.failed & vello_encoding::FLATTEN_QUALITY_FAILED != 0 {
+        // Geometry limits are not allocation shortfalls; never retry at lower quality.
+        return Err(Error::CurveFlatteningLimit);
+    }
+    raise(high_water, &needed, |count| count.saturating_add(count / 4));
+    Ok(())
+}
+
+#[cfg(all(test, feature = "wgpu"))]
+mod quality_counter_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_conservative_estimate_refuses_before_resource_preparation() {
+        let estimate = BumpAllocators {
+            lines: u32::MAX,
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_curve_estimate(&estimate),
+            Err(Error::CurveEstimateLimit { .. })
+        ));
+        let admitted = BumpAllocators {
+            lines: vello_encoding::MAX_FLATTEN_LINES as u32,
+            ..Default::default()
+        };
+        validate_curve_estimate(&admitted).unwrap();
+    }
+
+    #[test]
+    fn quality_refusal_cannot_be_misreported_as_allocation_recovery() {
+        let mut high_water = BumpAllocators {
+            lines: 100,
+            ..Default::default()
+        };
+        let failed = BumpAllocators {
+            failed: vello_encoding::FLATTEN_QUALITY_FAILED | 4,
+            lines: 65536,
+            ..Default::default()
+        };
+        assert!(matches!(
+            accept_quality_counters(&mut high_water, failed),
+            Err(Error::CurveFlatteningLimit)
+        ));
+        assert_eq!(high_water.lines, 100);
+        // The old allocation-only failure remains recoverable at unchanged quality.
+        let shortfall = BumpAllocators {
+            failed: 4,
+            lines: 1000,
+            ..Default::default()
+        };
+        accept_quality_counters(&mut high_water, shortfall).unwrap();
+        assert_eq!(high_water.lines, 1250);
+        assert_eq!(high_water.failed, 0);
+    }
+
+    #[test]
+    fn counter_download_requires_intact_flags_and_counts() {
+        let counters = BumpAllocators {
+            failed: vello_encoding::FLATTEN_QUALITY_FAILED,
+            lines: 1234,
+            ..Default::default()
+        };
+        let bytes = bytemuck::bytes_of(&counters);
+        assert!(parse_bump(&bytes[..bytes.len() - 1]).is_none());
+        let downloaded = parse_bump(bytes).unwrap();
+        assert_eq!(downloaded.failed, counters.failed);
+        assert_eq!(downloaded.lines, 1234);
     }
 }
 

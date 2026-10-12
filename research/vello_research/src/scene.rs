@@ -70,6 +70,17 @@ impl Scene {
             .tally(transform.as_ref().map(Transform::from_kurbo).as_ref())
     }
 
+    /// Saturating dynamic element estimates before byte conversion. Renderer
+    /// admission checks its curve workload bound before preparing target/resources.
+    #[cfg(feature = "bump_estimate")]
+    pub fn bump_estimate_counts(
+        &self,
+        transform: Option<Affine>,
+    ) -> vello_encoding::BumpAllocators {
+        self.estimator
+            .tally_counts(transform.as_ref().map(Transform::from_kurbo).as_ref())
+    }
+
     /// Returns the underlying raw encoding.
     pub fn encoding(&self) -> &Encoding {
         &self.encoding

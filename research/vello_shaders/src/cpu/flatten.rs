@@ -35,6 +35,13 @@ const DERIV_THRESH: f32 = 1e-6;
 const DERIV_EPS: f32 = 1e-6;
 // Limit for subdivision of cubic Béziers.
 const SUBDIV_LIMIT: f32 = 1.0 / 65536.0;
+// Device-pixel flatness target, matching WGSL and sparse common.
+const CURVE_FLATNESS: f32 = 1.0 / 256.0;
+const MAX_CURVE_LINES: usize = 65_536;
+
+fn refuse_curve(failed: &mut u32) {
+    *failed |= vello_encoding::FLATTEN_QUALITY_FAILED | 0x4;
+}
 
 /// Evaluate both the point and derivative of a cubic bezier.
 fn eval_cubic_and_deriv(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> (Vec2, Vec2) {
@@ -87,6 +94,9 @@ fn write_line(
     );
     bbox.add_pt(p0);
     bbox.add_pt(p1);
+    if line_ix >= lines.len() {
+        return;
+    }
     lines[line_ix] = LineSoup {
         path_ix,
         _padding: Default::default(),
@@ -165,17 +175,30 @@ fn flatten_arc(
     line_ix: &mut usize,
     lines: &mut [LineSoup],
     bbox: &mut IntBbox,
+    failed: &mut u32,
 ) {
-    const MIN_THETA: f32 = 0.0001;
-
     let mut p0 = transform.apply(begin);
     let mut r = begin - center;
-    let tol: f32 = 0.25;
-    let radius = tol.max((p0 - transform.apply(center)).length());
-    let theta = (2. * (1. - tol / radius).acos()).max(MIN_THETA);
+    let tol = CURVE_FLATNESS;
+    let m = transform.0;
+    let scale = 0.5
+        * (Vec2::new(m[0] + m[3], m[1] - m[2]).length()
+            + Vec2::new(m[0] - m[3], m[1] + m[2]).length());
+    let radius = tol.max(r.length() * scale);
+    let ratio = tol / radius;
+    let theta = if ratio < 0.0001 {
+        (8.0 * ratio).sqrt()
+    } else {
+        2.0 * (1.0 - ratio).acos()
+    };
 
     // Always output at least one line so that we always draw the chord.
-    let n_lines = ((angle / theta).ceil() as u32).max(1);
+    let requested = (angle / theta).ceil();
+    if !requested.is_finite() || requested < 0.0 || requested > MAX_CURVE_LINES as f32 {
+        refuse_curve(failed);
+        return;
+    }
+    let n_lines = (requested as u32).max(1);
 
     let (s, c) = theta.sin_cos();
     let rot = Transform([c, -s, s, c, 0., 0.]);
@@ -210,6 +233,7 @@ fn flatten_euler(
     line_ix: &mut usize,
     lines: &mut [LineSoup],
     bbox: &mut IntBbox,
+    failed: &mut u32,
 ) {
     // Flatten in local coordinates if this is a stroke. Flatten in device space otherwise.
     let (p0, p1, p2, p3, scale, transform) = if offset == 0. {
@@ -248,7 +272,7 @@ fn flatten_euler(
         return;
     }
 
-    let tol: f32 = 0.25;
+    let tol = CURVE_FLATNESS;
     let mut t0_u: u32 = 0;
     let mut dt: f32 = 1.;
     let mut last_p = p0;
@@ -260,6 +284,7 @@ fn flatten_euler(
     }
     let mut last_t = 0.;
     let mut lp0 = t_start;
+    let mut emitted_lines = 0usize;
 
     loop {
         let t0 = (t0_u as f32) * dt;
@@ -287,7 +312,7 @@ fn flatten_euler(
         log!(
             "@@@   loop: p0={this_p0:?} p1={this_p1:?} q0={this_q0:?} q1={this_q1:?} {cubic_params:?} t0: {t0}, t1: {t1}, dt: {dt}"
         );
-        if cubic_params.err * scale <= tol || dt <= SUBDIV_LIMIT {
+        if cubic_params.err * scale <= tol {
             log!("@@@   error within tolerance");
             let euler_params = EulerParams::from_angles(cubic_params.th0, cubic_params.th1);
             let es = EulerSeg::from_params(this_p0, this_p1, euler_params);
@@ -334,7 +359,16 @@ fn flatten_euler(
                 let n_frac = scaled_int;
                 (n_frac, EspcRobust::Normal)
             };
-            let n = (n_frac * scale_multiplier).ceil().clamp(1.0, 100.0);
+            let requested = n_frac * scale_multiplier;
+            if !requested.is_finite()
+                || requested < 0.0
+                || requested.ceil().max(1.0) > (MAX_CURVE_LINES - emitted_lines) as f32
+            {
+                refuse_curve(failed);
+                return;
+            }
+            let n = requested.ceil().max(1.0);
+            emitted_lines += n as usize;
 
             // Flatten line segments
             log!("@@@   loop: lines: {n}");
@@ -376,6 +410,10 @@ fn flatten_euler(
             t0_u >>= shift;
             dt *= (1 << shift) as f32;
         } else {
+            if dt <= SUBDIV_LIMIT {
+                refuse_curve(failed);
+                return;
+            }
             // Subdivide; halve the size of the range while retaining its start.
             t0_u = t0_u.saturating_mul(2);
             dt *= 0.5;
@@ -394,6 +432,7 @@ fn draw_cap(
     line_ix: &mut usize,
     lines: &mut [LineSoup],
     bbox: &mut IntBbox,
+    failed: &mut u32,
 ) {
     if cap_style == Style::FLAGS_CAP_BITS_ROUND {
         flatten_arc(
@@ -406,6 +445,7 @@ fn draw_cap(
             line_ix,
             lines,
             bbox,
+            failed,
         );
         return;
     }
@@ -436,6 +476,7 @@ fn draw_join(
     line_ix: &mut usize,
     lines: &mut [LineSoup],
     bbox: &mut IntBbox,
+    failed: &mut u32,
 ) {
     let mut front0 = p0 + n_prev;
     let front1 = p0 + n_next;
@@ -497,6 +538,7 @@ fn draw_join(
                 line_ix,
                 lines,
                 bbox,
+                failed,
             );
             output_line_with_transform(path_ix, other0, other1, transform, line_ix, lines, bbox);
         }
@@ -723,6 +765,7 @@ fn flatten_main(
                             &mut line_ix,
                             lines,
                             &mut bbox,
+                            &mut bump.failed,
                         );
                     } else {
                         // Don't draw anything if the path is closed.
@@ -775,6 +818,7 @@ fn flatten_main(
                         &mut line_ix,
                         lines,
                         &mut bbox,
+                        &mut bump.failed,
                     );
                     flatten_euler(
                         &pts,
@@ -786,6 +830,7 @@ fn flatten_main(
                         &mut line_ix,
                         lines,
                         &mut bbox,
+                        &mut bump.failed,
                     );
 
                     if neighbor.do_join {
@@ -801,6 +846,7 @@ fn flatten_main(
                             &mut line_ix,
                             lines,
                             &mut bbox,
+                            &mut bump.failed,
                         );
                     } else {
                         // Draw end cap.
@@ -815,6 +861,7 @@ fn flatten_main(
                             &mut line_ix,
                             lines,
                             &mut bbox,
+                            &mut bump.failed,
                         );
                     }
                 }
@@ -829,8 +876,17 @@ fn flatten_main(
                     &mut line_ix,
                     lines,
                     &mut bbox,
+                    &mut bump.failed,
                 );
             }
+        }
+
+        if line_ix > vello_encoding::MAX_FLATTEN_LINES {
+            refuse_curve(&mut bump.failed);
+            break;
+        }
+        if bump.failed & vello_encoding::FLATTEN_QUALITY_FAILED != 0 {
+            break;
         }
 
         if (path_ix as usize) < path_bboxes.len() && (bbox.x1 > bbox.x0 || bbox.y1 > bbox.y0) {
@@ -860,4 +916,128 @@ pub fn flatten(n_wg: u32, resources: &[CpuBinding<'_>]) {
         &mut bump,
         &mut lines,
     );
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+
+    fn flatten(c: &CubicPoints, transform: &Transform) -> (Vec<LineSoup>, u32) {
+        let mut lines = vec![
+            LineSoup {
+                path_ix: 0,
+                _padding: Default::default(),
+                p0: [0.0; 2],
+                p1: [0.0; 2]
+            };
+            8192
+        ];
+        let mut count = 0;
+        let mut bbox = IntBbox::default();
+        let mut failed = 0;
+        flatten_euler(
+            c,
+            0,
+            transform,
+            0.0,
+            c.p0,
+            c.p3,
+            &mut count,
+            &mut lines,
+            &mut bbox,
+            &mut failed,
+        );
+        assert!(count <= lines.len());
+        lines.truncate(count);
+        (lines, failed)
+    }
+
+    fn distance(p: Vec2, line: &LineSoup) -> f32 {
+        let a = Vec2::new(line.p0[0], line.p0[1]);
+        let b = Vec2::new(line.p1[0], line.p1[1]);
+        let d = b - a;
+        let t = ((p - a).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+        (p - (a + d * t)).length()
+    }
+
+    #[test]
+    fn quality_canonical_curve_is_resolved_in_device_pixels() {
+        let c = CubicPoints {
+            p0: Vec2::new(0.0, 0.0),
+            p1: Vec2::new(0.0, 60.0),
+            p2: Vec2::new(60.0, 60.0),
+            p3: Vec2::new(60.0, 0.0),
+        };
+        // Large scale crosses the old 100-line ceiling for a smooth accepted Euler span.
+        let transform = Transform([100.0, 0.0, 0.0, 100.0, 8.0, 8.0]);
+        let (lines, failed) = flatten(&c, &transform);
+        assert_eq!(failed, 0);
+        assert!(lines.len() > 100 && lines.len() < 8192);
+        for i in 0..=1024 {
+            let p =
+                transform.apply(eval_cubic_and_deriv(c.p0, c.p1, c.p2, c.p3, i as f32 / 1024.0).0);
+            let error = lines
+                .iter()
+                .map(|line| distance(p, line))
+                .fold(f32::INFINITY, f32::min);
+            assert!(error <= 1.0 / 64.0, "device-pixel distance {error}");
+        }
+    }
+
+    #[test]
+    fn quality_limit_refuses_without_a_coarse_fallback() {
+        let c = CubicPoints {
+            p0: Vec2::new(0.0, 0.0),
+            p1: Vec2::new(0.0, 60.0),
+            p2: Vec2::new(60.0, 60.0),
+            p3: Vec2::new(60.0, 0.0),
+        };
+        let (lines, failed) = flatten(&c, &Transform([1e25, 0.0, 0.0, 1e25, 0.0, 0.0]));
+        assert_ne!(failed & vello_encoding::FLATTEN_QUALITY_FAILED, 0);
+        assert_ne!(failed & 0x4, 0);
+        assert!(
+            lines.is_empty(),
+            "quality refusal must not publish a coarse chord"
+        );
+    }
+
+    #[test]
+    fn quality_round_cap_accounts_for_anisotropic_scale() {
+        let mut lines = vec![
+            LineSoup {
+                path_ix: 0,
+                _padding: Default::default(),
+                p0: [0.0; 2],
+                p1: [0.0; 2]
+            };
+            8192
+        ];
+        let mut count = 0;
+        let mut failed = 0;
+        let mut bbox = IntBbox::default();
+        let transform = Transform([1.0, 0.0, 0.0, 1000.0, 0.0, 0.0]);
+        flatten_arc(
+            0,
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, -1.0),
+            Vec2::new(0.0, 0.0),
+            std::f32::consts::FRAC_PI_2,
+            &transform,
+            &mut count,
+            &mut lines,
+            &mut bbox,
+            &mut failed,
+        );
+        assert_eq!(failed, 0);
+        lines.truncate(count);
+        for i in 0..=1024 {
+            let angle = i as f32 / 1024.0 * std::f32::consts::FRAC_PI_2;
+            let p = transform.apply(Vec2::new(angle.cos(), -angle.sin()));
+            let error = lines
+                .iter()
+                .map(|line| distance(p, line))
+                .fold(f32::INFINITY, f32::min);
+            assert!(error <= 1.0 / 128.0, "anisotropic cap error {error}");
+        }
+    }
 }

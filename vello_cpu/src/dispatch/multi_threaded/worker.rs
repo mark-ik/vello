@@ -19,6 +19,9 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
+    pub(crate) fn flattening_error(&self) -> Option<vello_common::flatten::FlattenError> {
+        self.strip_generator.flattening_error()
+    }
     pub(crate) fn new(width: u16, height: u16, thread_id: u8, level: Level) -> Self {
         let strip_generator = StripGenerator::new(width, height, level);
         let strip_storage = StripStorage::default();

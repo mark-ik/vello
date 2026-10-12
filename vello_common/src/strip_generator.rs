@@ -5,7 +5,7 @@
 
 use crate::clip::{ClipRef, ClipShape, PathDataRef, intersect};
 use crate::fearless_simd::Level;
-use crate::flatten::{FlattenCtx, Line};
+use crate::flatten::{FlattenCtx, FlattenError, Line};
 use crate::geometry::RectU16;
 use crate::kurbo::{Affine, PathEl, Rect, Stroke};
 use crate::peniko::Fill;
@@ -90,6 +90,10 @@ pub struct StripGenerator {
 }
 
 impl StripGenerator {
+    /// Sticky geometry refusal in the current recording epoch.
+    pub fn flattening_error(&self) -> Option<FlattenError> {
+        self.flatten_ctx.error()
+    }
     /// Create a new strip generator.
     pub fn new(width: u16, height: u16, level: Level) -> Self {
         Self {
@@ -258,6 +262,7 @@ impl StripGenerator {
 
     /// Reset the strip generator for a viewport size, resizing only when needed.
     pub fn reset(&mut self, width: u16, height: u16) {
+        self.flatten_ctx.clear_error();
         self.width = width;
         self.height = height;
         self.line_buf.clear();

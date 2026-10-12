@@ -446,6 +446,9 @@ impl WebGlRenderer {
         // options.
         clear_color: AlphaColor<Srgb>,
     ) -> Result<(), WebGlError> {
+        if let Some(error) = scene.flattening_error() {
+            return Err(RenderError::CurveFlattening(error).into());
+        }
         debug_assert_eq!(
             RenderSize {
                 width: self.gl.drawing_buffer_width().try_into().unwrap(),
@@ -522,6 +525,9 @@ impl WebGlRenderer {
         atlas_id: AtlasId,
         texture_bindings: &WebGlTextureBindings,
     ) -> Result<(), WebGlError> {
+        if let Some(error) = scene.flattening_error() {
+            return Err(RenderError::CurveFlattening(error).into());
+        }
         self.programs
             .maybe_create_atlas_textures(&self.gl, atlas_count)?;
 
@@ -608,6 +614,9 @@ impl WebGlRenderer {
         texture_bindings: &WebGlTextureBindings,
         render_target_texture: Option<&WebGlTexture>,
     ) -> Result<(), WebGlError> {
+        if let Some(error) = scene.flattening_error() {
+            return Err(RenderError::CurveFlattening(error).into());
+        }
         let encoded_paints = &scene.encoded_paints;
         let use_depth_buffer = self.programs.resources.view_framebuffer.use_depth_buffer();
 

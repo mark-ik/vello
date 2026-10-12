@@ -869,6 +869,12 @@ impl Scene {
         self.filter = None;
     }
 
+    /// Sticky bounded curve-quality refusal for this recorded scene. Only an
+    /// explicit scene reset discards the associated error epoch.
+    pub fn flattening_error(&self) -> Option<vello_common::flatten::FlattenError> {
+        self.viewport_state.flattening_error()
+    }
+
     /// Get the width of the render context.
     pub fn width(&self) -> u16 {
         self.width

@@ -263,6 +263,9 @@ impl Renderer {
         texture_bindings: &TextureBindings,
         target_init: TargetInit<'_>,
     ) -> Result<(), RenderError> {
+        if let Some(error) = scene.flattening_error() {
+            return Err(RenderError::CurveFlattening(error));
+        }
         #[cfg(feature = "text")]
         {
             resources.before_render(
@@ -347,6 +350,9 @@ impl Renderer {
         atlas_id: AtlasId,
         texture_bindings: &TextureBindings,
     ) -> Result<(), RenderError> {
+        if let Some(error) = scene.flattening_error() {
+            return Err(RenderError::CurveFlattening(error));
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render to Atlas Encoder"),
         });
@@ -419,6 +425,9 @@ impl Renderer {
         root_output_target: RootTarget,
         texture_bindings: &TextureBindings,
     ) -> Result<(), RenderError> {
+        if let Some(error) = scene.flattening_error() {
+            return Err(RenderError::CurveFlattening(error));
+        }
         self.programs.depth_cleared_this_frame = false;
         self.prepare_gpu_encoded_paints(
             encoded_paints,
