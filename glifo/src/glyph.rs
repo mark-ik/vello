@@ -2091,7 +2091,7 @@ impl<'a> OutlineCacheSession<'a> {
                 };
 
                 drawing_buf.reuse();
-                outline_glyph.draw(draw_settings, &mut drawing_buf).unwrap();
+                draw_outline(&outline_glyph, draw_settings, &mut drawing_buf).unwrap();
                 if embolden.amount != Diagonal2::new(0.0, 0.0) {
                     drawing_buf.path = kurbo::expand_path(
                         &drawing_buf.path,
@@ -2596,4 +2596,37 @@ mod tests {
             })
         );
     }
+}
+
+/// Draw `outline` and replay it into `pen`.
+///
+/// Skrifa's glyf and CFF interpreters are generic over the pen, so every pen
+/// type compiles its own copy of them. Drawing into `Vec<PathElement>` — the
+/// pen Read Fonts itself provides — lets every outline consumer in a binary
+/// share one copy; replaying the elements is a trivial loop.
+pub(crate) fn draw_outline(
+    outline: &skrifa::outline::OutlineGlyph<'_>,
+    settings: DrawSettings<'_>,
+    pen: &mut impl OutlinePen,
+) -> Result<skrifa::outline::AdjustedMetrics, skrifa::outline::DrawError> {
+    use skrifa::outline::pen::PathElement;
+    let mut elements = Vec::<PathElement>::new();
+    let metrics = outline.draw(settings, &mut elements)?;
+    for element in elements {
+        match element {
+            PathElement::MoveTo { x, y } => pen.move_to(x, y),
+            PathElement::LineTo { x, y } => pen.line_to(x, y),
+            PathElement::QuadTo { cx0, cy0, x, y } => pen.quad_to(cx0, cy0, x, y),
+            PathElement::CurveTo {
+                cx0,
+                cy0,
+                cx1,
+                cy1,
+                x,
+                y,
+            } => pen.curve_to(cx0, cy0, cx1, cy1, x, y),
+            PathElement::Close => pen.close(),
+        }
+    }
+    Ok(metrics)
 }

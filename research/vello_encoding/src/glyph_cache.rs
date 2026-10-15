@@ -206,7 +206,7 @@ impl GlyphCacheSession<'_> {
         let n_path_segments = if self.embolden.amount != peniko::kurbo::Diagonal2::new(0.0, 0.0) {
             self.outline_buf.truncate(0);
             let mut path = BezPathOutline(&mut self.outline_buf);
-            outline.draw(draw_settings, &mut path).ok()?;
+            draw_outline(&outline, draw_settings, &mut path).ok()?;
             let path = peniko::kurbo::expand_path(
                 &self.outline_buf,
                 self.embolden.amount,
@@ -219,7 +219,7 @@ impl GlyphCacheSession<'_> {
             encoder.finish(false)
         } else {
             let mut path = encoding_ptr.encode_path(is_fill);
-            outline.draw(draw_settings, &mut path).ok()?;
+            draw_outline(&outline, draw_settings, &mut path).ok()?;
             path.finish(false)
         };
         if n_path_segments == 0 {
@@ -417,4 +417,37 @@ fn find_hint_entry(entries: &mut Vec<HintEntry>, key: &HintKey<'_>) -> Option<(u
     } else {
         Some((found_index, false))
     }
+}
+
+/// Draw `outline` and replay it into `pen`.
+///
+/// Skrifa's glyf and CFF interpreters are generic over the pen, so every pen
+/// type compiles its own copy of them. Drawing into `Vec<PathElement>` — the
+/// pen Read Fonts itself provides — lets every outline consumer in a binary
+/// share one copy; replaying the elements is a trivial loop.
+pub(crate) fn draw_outline(
+    outline: &skrifa::outline::OutlineGlyph<'_>,
+    settings: skrifa::outline::DrawSettings<'_>,
+    pen: &mut impl OutlinePen,
+) -> Result<skrifa::outline::AdjustedMetrics, skrifa::outline::DrawError> {
+    use skrifa::outline::pen::PathElement;
+    let mut elements = Vec::<PathElement>::new();
+    let metrics = outline.draw(settings, &mut elements)?;
+    for element in elements {
+        match element {
+            PathElement::MoveTo { x, y } => pen.move_to(x, y),
+            PathElement::LineTo { x, y } => pen.line_to(x, y),
+            PathElement::QuadTo { cx0, cy0, x, y } => pen.quad_to(cx0, cy0, x, y),
+            PathElement::CurveTo {
+                cx0,
+                cy0,
+                cx1,
+                cy1,
+                x,
+                y,
+            } => pen.curve_to(cx0, cy0, cx1, cy1, x, y),
+            PathElement::Close => pen.close(),
+        }
+    }
+    Ok(metrics)
 }
