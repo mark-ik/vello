@@ -103,8 +103,8 @@ clippy.wildcard_dependencies = "warn"
 
 [workspace.dependencies]
 vello = { package = "netrender-vello", version = "0.11.0", path = "research/vello_research" }
-vello_encoding = { version = "0.11.0", path = "research/vello_encoding" }
-vello_shaders = { version = "0.11.0", path = "research/vello_shaders" }
+vello_encoding = { package = "netrender-vello-encoding", version = "0.11.0", path = "research/vello_encoding" }
+vello_shaders = { package = "netrender-vello-shaders", version = "0.11.0", path = "research/vello_shaders" }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["autohint_shaping"] }
 # The version of kurbo used below should be kept in sync

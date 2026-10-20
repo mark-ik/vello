@@ -1,13 +1,16 @@
 [package]
-name = "vello_shaders"
+name = "netrender-vello-shaders"
 version.workspace = true # We mimic Vello's version
-description = "Vello infrastructure to preprocess and cross-compile shaders at compile time."
+description = "Netrender's Vello 0.11 shaders for wgpu 30: infrastructure to preprocess and cross-compile shaders at compile time. Library name `vello_shaders`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello_shaders"
 
 [package.metadata.docs.rs]
 all-features = true

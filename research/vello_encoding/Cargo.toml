@@ -1,13 +1,16 @@
 [package]
-name = "vello_encoding"
+name = "netrender-vello-encoding"
 version.workspace = true # We mimic Vello's version
-description = "Vello types that represent the data that needs to be rendered."
+description = "Netrender's Vello 0.11 encoding types for wgpu 30: the data that needs to be rendered, with device-pixel curve quality bounds. Library name `vello_encoding`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello_encoding"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -2508,15 +2508,37 @@ dependencies = [
  "bytemuck",
  "futures-intrusive",
  "log",
+ "netrender-vello-encoding",
+ "netrender-vello-shaders",
  "peniko",
  "png",
  "skrifa 0.44.0",
  "static_assertions",
  "thiserror 2.0.18",
- "vello_encoding",
- "vello_shaders",
  "wgpu",
  "wgpu-profiler",
+]
+
+[[package]]
+name = "netrender-vello-encoding"
+version = "0.11.0"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "peniko",
+ "skrifa 0.44.0",
+ "smallvec",
+]
+
+[[package]]
+name = "netrender-vello-shaders"
+version = "0.11.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga",
+ "netrender-vello-encoding",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4517,17 +4539,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello_encoding"
-version = "0.11.0"
-dependencies = [
- "bytemuck",
- "guillotiere",
- "peniko",
- "skrifa 0.44.0",
- "smallvec",
-]
-
-[[package]]
 name = "vello_example_scenes"
 version = "0.0.0"
 dependencies = [
@@ -4597,24 +4608,13 @@ dependencies = [
  "bytemuck",
  "image",
  "netrender-vello",
+ "netrender-vello-encoding",
+ "netrender-vello-shaders",
  "nv-flip",
  "oxipng",
  "png",
  "pollster",
  "scenes",
- "vello_encoding",
- "vello_shaders",
-]
-
-[[package]]
-name = "vello_shaders"
-version = "0.11.0"
-dependencies = [
- "bytemuck",
- "log",
- "naga",
- "thiserror 2.0.18",
- "vello_encoding",
 ]
 
 [[package]]
@@ -5719,6 +5719,7 @@ dependencies = [
  "kurbo",
  "log",
  "netrender-vello",
+ "netrender-vello-shaders",
  "notify-debouncer-full",
  "pollster",
  "profiling",
@@ -5726,7 +5727,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing_android_trace",
- "vello_shaders",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
