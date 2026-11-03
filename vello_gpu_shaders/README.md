@@ -44,6 +44,21 @@ enable the diagnostic `unminified` feature as well:
 cargo run -p vello_gpu_shaders --features glsl,unminified
 ```
 
+## SPIR-V validation
+
+The ignored test `shipped_shaders_validate_as_spirv_1_6` requires `spirv-val`
+from Khronos SPIRV-Tools on `PATH` and `VELLO_SHADER_VALIDATION_DIR` set to an
+artifact directory. Run that test explicitly with `--ignored --nocapture`.
+It retains WGSL and SPIR-V inputs and validates all shipped shaders, both as
+whole modules and for each entry point, against Vulkan 1.3. WGSL parsing and
+validation alone do not establish that the backend emits valid SPIR-V.
+
+Vertex outputs are constructed as values rather than mutable local structs.
+Naga 30.0.1 emits explicit layout decorations on struct types, which are invalid
+for function-local storage in SPIR-V 1.5 and later. This shader formulation
+avoids that compiler limitation without changing buffer layouts or lowering the
+SPIR-V version.
+
 ## Minimum supported Rust Version (MSRV)
 
 This version of Vello GPU Shaders has been verified to compile with **Rust
