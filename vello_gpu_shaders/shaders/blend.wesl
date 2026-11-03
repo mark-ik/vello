@@ -69,20 +69,20 @@ fn vs_main(
     let parent_texture_xy = vec2<f32>(geometry_origin) + corner * geometry_size;
     let child_local = parent_texture_xy - vec2<f32>(child_parent_origin);
 
-    var out: VertexOutput;
-    out.parent_texture_xy = parent_texture_xy;
-    out.child_texture_xy = vec2<f32>(child_texture_origin) + child_local;
-    out.child_local = child_local;
-    out.child_rect_size = instance.child_rect_size;
-    out.blend_config = instance.blend_config;
-    out.tex_coord = vec2<f32>(
+    let tex_coord = vec2<f32>(
         f32(instance.geometry_alpha_col_idx) + corner.x * geometry_size.x,
         corner.y * geometry_size.y,
     );
-
     let ndc = pixel_to_ndc(parent_texture_xy, vec2<f32>(parent_texture_size));
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
-    return out;
+    return VertexOutput(
+        parent_texture_xy,
+        vec2<f32>(child_texture_origin) + child_local,
+        child_local,
+        instance.child_rect_size,
+        instance.blend_config,
+        tex_coord,
+        vec4<f32>(ndc, 0.0, 1.0),
+    );
 }
 
 fn load_layer(texture_index: u32, xy: vec2<i32>) -> vec4<f32> {

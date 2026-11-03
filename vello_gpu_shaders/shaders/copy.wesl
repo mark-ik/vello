@@ -40,12 +40,11 @@ fn vs_main(
     let local = quad_corner(vertex_index) * vec2<f32>(copy_rect_size);
     let dest_texture_xy = vec2<f32>(dest_texture_origin) + local;
 
-    var out: VertexOutput;
-    out.source_texture_xy = vec2<f32>(source_texture_origin) + local;
-
     let ndc = pixel_to_ndc(dest_texture_xy, vec2<f32>(dest_texture_size));
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
-    return out;
+    return VertexOutput(
+        vec2<f32>(source_texture_origin) + local,
+        vec4<f32>(ndc, 0.0, 1.0),
+    );
 }
 
 @fragment

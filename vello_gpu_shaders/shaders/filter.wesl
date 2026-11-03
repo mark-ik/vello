@@ -132,16 +132,16 @@ fn vs_main(
     let pixel = vec2<f32>(dest_origin) + corner * vec2<f32>(render_size);
     let ndc = pixel_to_ndc(pixel, dest_texture_size);
 
-    var out: FilterVertexOutput;
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
-    out.filter_data_offset = instance.filter_data_offset;
-    out.source_origin = source_origin;
-    out.source_size = source_size;
-    out.dest_origin = dest_origin;
-    out.dest_size = dest_size;
-    out.original_origin = original_origin;
-    out.filter_pass_kind = instance.filter_pass_kind;
-    return out;
+    return FilterVertexOutput(
+        vec4<f32>(ndc, 0.0, 1.0),
+        instance.filter_data_offset,
+        source_origin,
+        source_size,
+        dest_origin,
+        dest_size,
+        original_origin,
+        instance.filter_pass_kind,
+    );
 }
 
 // Sample a pixel from the source texture.
