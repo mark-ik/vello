@@ -303,7 +303,14 @@ impl Render {
         let mut cpu_config =
             RenderConfig::new(&layout, params.width, params.height, &params.base_color);
         if let Some(floor) = floor {
-            grow_to_floor(&mut cpu_config, &layout, floor, max_binding);
+            let mut floor = *floor;
+            floor.blend = floor.blend.max(conservative_blend_floor(
+                layout.draw_tags(&packed),
+                params.width,
+                params.height,
+                max_binding,
+            ));
+            grow_to_floor(&mut cpu_config, &layout, &floor, max_binding);
         }
         // HACK: The coarse workgroup counts is the number of active bins.
         if (cpu_config.workgroup_counts.coarse.0
@@ -775,6 +782,43 @@ impl Render {
     }
 }
 
+// Mirrors BLEND_STACK_SPLIT and 16×16 tiles in vello_shaders/shader/shared/config.wgsl.
+// The coarse shader increments its per-tile render depth for only a subset of
+// BEGIN_CLIP tags, and allocates once per valid tile. Global resolved nesting
+// therefore bounds all spill entries, including color-glyph-expanded layers.
+fn conservative_blend_floor(
+    tags: &[vello_encoding::DrawTag],
+    width: u32,
+    height: u32,
+    max_binding: u64,
+) -> u32 {
+    const BLEND_STACK_SPLIT: u64 = 4;
+    const TILE_SIZE: u64 = 16;
+    let cap = (max_binding / size_of::<u32>() as u64).min(u64::from(u32::MAX));
+    let mut depth = 0_u64;
+    let mut max_depth = 0_u64;
+    for tag in tags {
+        if *tag == vello_encoding::DrawTag::BEGIN_CLIP {
+            depth = depth.saturating_add(1);
+            max_depth = max_depth.max(depth);
+        } else if *tag == vello_encoding::DrawTag::END_CLIP {
+            if depth == 0 {
+                // An invalid stream offers no reliable nesting bound.
+                return cap as u32;
+            }
+            depth -= 1;
+        }
+    }
+    let tiles_x = u64::from(width).div_ceil(TILE_SIZE);
+    let tiles_y = u64::from(height).div_ceil(TILE_SIZE);
+    max_depth
+        .saturating_sub(BLEND_STACK_SPLIT)
+        .saturating_mul(tiles_x)
+        .saturating_mul(tiles_y)
+        .saturating_mul(TILE_SIZE * TILE_SIZE)
+        .min(cap) as u32
+}
+
 /// Raise each dynamically sized buffer to hold `floor` elements where that is
 /// more than the fixed default, never past `max_binding` bytes, and keep the
 /// bounds the shaders check in step.
@@ -806,3 +850,7 @@ fn grow_to_floor(
     gpu.blend_size = sizes.blend_spill.len();
     gpu.binning_size = sizes.bin_data.len() - layout.bin_data_start;
 }
+
+#[cfg(test)]
+#[path = "blend_floor_tests.rs"]
+mod blend_floor_tests;

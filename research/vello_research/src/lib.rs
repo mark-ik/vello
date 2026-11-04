@@ -307,10 +307,11 @@ pub enum Error {
     CurveFlatteningLimit,
     /// GPU dynamic allocation failed; the frame is unqualified.
     /// Counters retain the required sizes so the caller can assess recovery
-    /// against the device binding limit. The renderer records growth hints.
+    /// against the effective storage-buffer cap (binding and buffer limits).
+    /// The renderer records growth hints.
     #[cfg(feature = "wgpu")]
     #[error(
-        "GPU allocation shortfall (needed {needed:?}, maximum binding {max_binding_bytes} bytes)"
+        "GPU allocation shortfall (needed {needed:?}, effective storage-buffer cap {max_binding_bytes} bytes)"
     )]
     AllocationShortfall {
         needed: BumpAllocators,
@@ -530,7 +531,7 @@ impl Renderer {
             &mut self.image_atlas,
             params,
             &floor,
-            device.limits().max_storage_buffer_binding_size,
+            effective_storage_limit(device),
             robust,
         );
         let external_resources = [ExternalResource::Image(
@@ -546,7 +547,7 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             &mut self.profiler,
         )?;
-        self.start_bump_readback(bump, device.limits().max_storage_buffer_binding_size)?;
+        self.start_bump_readback(bump, effective_storage_limit(device))?;
         // N.B. This is horrible; this integration of wgpu-profiler really needs some work...
         #[cfg(feature = "wgpu-profiler")]
         {
@@ -791,7 +792,7 @@ impl Renderer {
             params,
             robust,
             Some(&floor),
-            device.limits().max_storage_buffer_binding_size,
+            effective_storage_limit(device),
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();
@@ -827,9 +828,7 @@ impl Renderer {
         self.engine.free_download(bump_buf);
         let quality = bump
             .ok_or(Error::CurveQualityReadbackFailed)
-            .and_then(|needed| {
-                self.accept_bump(needed, device.limits().max_storage_buffer_binding_size)
-            });
+            .and_then(|needed| self.accept_bump(needed, effective_storage_limit(device)));
         if let Err(error) = quality {
             let mut cleanup = Recording::default();
             render.discard_fine(&mut cleanup);
@@ -961,7 +960,7 @@ impl Renderer {
             self.pending_bump_bytes -= pending.bytes;
             self.accept_bump(
                 needed.ok_or(Error::CurveQualityReadbackFailed)?,
-                device.limits().max_storage_buffer_binding_size,
+                effective_storage_limit(device),
             )?;
         }
         Ok(())
@@ -1012,6 +1011,15 @@ impl Renderer {
         });
         Ok(())
     }
+}
+
+// Both constraints apply to storage-backed buffers; neither is increased.
+#[cfg(feature = "wgpu")]
+fn effective_storage_limit(device: &Device) -> u64 {
+    let limits = device.limits();
+    limits
+        .max_storage_buffer_binding_size
+        .min(limits.max_buffer_size)
 }
 
 #[cfg(feature = "wgpu")]
@@ -1194,3 +1202,7 @@ fn raise(to: &mut BumpAllocators, from: &BumpAllocators, headroom: impl Fn(u32) 
     to.blend = to.blend.max(headroom(from.blend));
     to.lines = to.lines.max(headroom(from.lines));
 }
+
+#[cfg(all(test, feature = "wgpu", not(target_arch = "wasm32")))]
+#[path = "blend_capacity_tests.rs"]
+mod blend_capacity_tests;
