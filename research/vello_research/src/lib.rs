@@ -305,6 +305,19 @@ pub enum Error {
     /// A curve cannot meet the device-pixel quality target within bounded work.
     #[error("Curve flattening exceeded the bounded quality workload")]
     CurveFlatteningLimit,
+    /// GPU dynamic allocation failed; the frame is unqualified.
+    /// Counters retain the required sizes so the caller can assess recovery
+    /// against the device binding limit. The renderer records growth hints.
+    #[cfg(feature = "wgpu")]
+    #[error(
+        "GPU allocation shortfall (needed {needed:?}, maximum binding {max_binding_bytes} bytes)"
+    )]
+    AllocationShortfall {
+        needed: BumpAllocators,
+        max_binding_bytes: u64,
+        /// The observed flatten line allocation alone exceeds the binding limit.
+        line_binding_exceeded: bool,
+    },
     /// Conservative curve estimate exceeds the admitted line-work bound.
     #[error("Curve estimate {lines} exceeds the admitted line workload {limit}")]
     CurveEstimateLimit { lines: u32, limit: usize },
@@ -533,7 +546,7 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             &mut self.profiler,
         )?;
-        self.start_bump_readback(bump)?;
+        self.start_bump_readback(bump, device.limits().max_storage_buffer_binding_size)?;
         // N.B. This is horrible; this integration of wgpu-profiler really needs some work...
         #[cfg(feature = "wgpu-profiler")]
         {
@@ -814,7 +827,9 @@ impl Renderer {
         self.engine.free_download(bump_buf);
         let quality = bump
             .ok_or(Error::CurveQualityReadbackFailed)
-            .and_then(|needed| self.accept_bump(needed));
+            .and_then(|needed| {
+                self.accept_bump(needed, device.limits().max_storage_buffer_binding_size)
+            });
         if let Err(error) = quality {
             let mut cleanup = Recording::default();
             render.discard_fine(&mut cleanup);
@@ -944,7 +959,10 @@ impl Renderer {
             };
             self.engine.free_download(pending.buffer);
             self.pending_bump_bytes -= pending.bytes;
-            self.accept_bump(needed.ok_or(Error::CurveQualityReadbackFailed)?)?;
+            self.accept_bump(
+                needed.ok_or(Error::CurveQualityReadbackFailed)?,
+                device.limits().max_storage_buffer_binding_size,
+            )?;
         }
         Ok(())
     }
@@ -954,15 +972,22 @@ impl Renderer {
         (self.pending_bump.len(), self.pending_bump_bytes)
     }
 
-    fn accept_bump(&mut self, needed: BumpAllocators) -> Result<()> {
-        accept_quality_counters(&mut self.high_water, needed)
+    fn accept_bump(&mut self, needed: BumpAllocators, max_binding_bytes: u64) -> Result<()> {
+        accept_quality_counters(&mut self.high_water, needed, max_binding_bytes)
     }
 
-    fn start_bump_readback(&mut self, buffer: recording::BufferProxy) -> Result<()> {
+    fn start_bump_readback(
+        &mut self,
+        buffer: recording::BufferProxy,
+        max_binding_bytes: u64,
+    ) -> Result<()> {
         if let Some(bytes) = self.engine.get_cpu_download(buffer) {
             let needed = parse_bump(bytes);
             self.engine.free_download(buffer);
-            return self.accept_bump(needed.ok_or(Error::CurveQualityReadbackFailed)?);
+            return self.accept_bump(
+                needed.ok_or(Error::CurveQualityReadbackFailed)?,
+                max_binding_bytes,
+            );
         }
         let download = self
             .engine
@@ -1000,13 +1025,31 @@ fn validate_curve_estimate(estimate: &BumpAllocators) -> Result<()> {
     Ok(())
 }
 
+// Mirrors STAGE_FLATTEN in vello_shaders/shader/shared/bump.wgsl.
 #[cfg(feature = "wgpu")]
-fn accept_quality_counters(high_water: &mut BumpAllocators, needed: BumpAllocators) -> Result<()> {
+const FLATTEN_ALLOCATION_FAILED: u32 = 0x4;
+
+#[cfg(feature = "wgpu")]
+fn accept_quality_counters(
+    high_water: &mut BumpAllocators,
+    needed: BumpAllocators,
+    max_binding_bytes: u64,
+) -> Result<()> {
     if needed.failed & vello_encoding::FLATTEN_QUALITY_FAILED != 0 {
         // Geometry limits are not allocation shortfalls; never retry at lower quality.
         return Err(Error::CurveFlatteningLimit);
     }
     raise(high_water, &needed, |count| count.saturating_add(count / 4));
+    if needed.failed != 0 {
+        let line_binding_exceeded = needed.failed & FLATTEN_ALLOCATION_FAILED != 0
+            && u64::from(needed.lines) * size_of::<vello_encoding::LineSoup>() as u64
+                > max_binding_bytes;
+        return Err(Error::AllocationShortfall {
+            needed,
+            max_binding_bytes,
+            line_binding_exceeded,
+        });
+    }
     Ok(())
 }
 
@@ -1043,19 +1086,85 @@ mod quality_counter_tests {
             ..Default::default()
         };
         assert!(matches!(
-            accept_quality_counters(&mut high_water, failed),
+            accept_quality_counters(&mut high_water, failed, 128 << 20),
             Err(Error::CurveFlatteningLimit)
         ));
         assert_eq!(high_water.lines, 100);
-        // The old allocation-only failure remains recoverable at unchanged quality.
+        // Allocation shortfall retains its growth hint while refusing this frame.
         let shortfall = BumpAllocators {
             failed: 4,
             lines: 1000,
             ..Default::default()
         };
-        accept_quality_counters(&mut high_water, shortfall).unwrap();
+        assert!(matches!(
+            accept_quality_counters(&mut high_water, shortfall, 128 << 20),
+            Err(Error::AllocationShortfall {
+                line_binding_exceeded: false,
+                ..
+            })
+        ));
         assert_eq!(high_water.lines, 1250);
         assert_eq!(high_water.failed, 0);
+    }
+
+    #[test]
+    fn allocation_shortfall_refuses_frame_but_retains_growth_hint() {
+        assert_eq!(size_of::<vello_encoding::LineSoup>(), 24);
+        let mut high_water = BumpAllocators::default();
+        let shortfall = BumpAllocators {
+            failed: 4,
+            lines: 1_000,
+            ..Default::default()
+        };
+        match accept_quality_counters(&mut high_water, shortfall, 512) {
+            Err(Error::AllocationShortfall {
+                needed,
+                max_binding_bytes,
+                line_binding_exceeded,
+            }) => {
+                assert_eq!(needed.failed, 4);
+                assert_eq!(needed.lines, 1_000);
+                assert_eq!(max_binding_bytes, 512);
+                assert!(line_binding_exceeded);
+            }
+            other => panic!("allocation shortfall lost its details: {other:?}"),
+        }
+        assert_eq!(high_water.lines, 1_250);
+    }
+
+    #[test]
+    fn successful_counters_still_qualify_and_record_growth() {
+        let mut high_water = BumpAllocators::default();
+        let needed = BumpAllocators {
+            lines: 80,
+            ..Default::default()
+        };
+        assert!(accept_quality_counters(&mut high_water, needed, 512).is_ok());
+        assert_eq!(high_water.lines, 100);
+    }
+
+    #[test]
+    fn non_flatten_shortfall_does_not_claim_line_binding_exhaustion() {
+        let mut high_water = BumpAllocators::default();
+        let needed = BumpAllocators {
+            failed: 1,
+            lines: 1_000,
+            binning: 2_000,
+            ..Default::default()
+        };
+        assert!(matches!(
+            accept_quality_counters(&mut high_water, needed, 512),
+            Err(Error::AllocationShortfall {
+                needed: BumpAllocators {
+                    failed: 1,
+                    binning: 2_000,
+                    ..
+                },
+                line_binding_exceeded: false,
+                ..
+            })
+        ));
+        assert_eq!(high_water.binning, 2_500);
     }
 
     #[test]
