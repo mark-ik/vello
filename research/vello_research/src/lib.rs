@@ -158,6 +158,8 @@ use debug::DebugLayers;
 use vello_encoding::{BumpAllocators, Resolver};
 #[cfg(feature = "wgpu")]
 use wgpu_engine::{ExternalResource, WgpuEngine};
+#[cfg(feature = "wgpu")]
+pub mod diagnostics;
 
 #[cfg(feature = "wgpu")]
 use std::{num::NonZeroUsize, sync::atomic::AtomicBool};
@@ -365,6 +367,7 @@ pub struct Renderer {
     /// Every submitted frame's counters, bounded until the host observes them.
     pending_bump: std::collections::VecDeque<PendingBump>,
     pending_bump_bytes: u64,
+    diagnostic_cpu_clock: Option<diagnostics::CpuClock>,
     #[cfg(feature = "debug_layers")]
     debug: debug::DebugRenderer,
     #[cfg(feature = "wgpu-profiler")]
@@ -485,6 +488,7 @@ impl Renderer {
             high_water: BumpAllocators::default(),
             pending_bump: std::collections::VecDeque::new(),
             pending_bump_bytes: 0,
+            diagnostic_cpu_clock: None,
             #[cfg(feature = "debug_layers")]
             debug,
             #[cfg(feature = "wgpu-profiler")]
@@ -910,6 +914,7 @@ struct PendingBump {
     /// 0 while mapping, 1 once mapped, 2 if the map failed.
     state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     bytes: u64,
+    diagnostic_ready: Option<diagnostics::ReadbackReady>,
 }
 
 #[cfg(feature = "wgpu")]
@@ -929,7 +934,29 @@ impl Renderer {
     /// before these counters arrive; call this again after the host's bounded device/event
     /// loop wait to qualify the final frame. A failed frame is never a successful receipt.
     pub fn poll_curve_quality(&mut self, device: &Device) -> Result<()> {
-        if device.poll(wgpu::PollType::Poll).is_err() {
+        self.poll_curve_quality_observed(device).0
+    }
+
+    /// Diagnostic-only clock injection. No dependency on an embedder or OS
+    /// clock crate enters the provider. The callback must only read a clock.
+    pub fn set_diagnostic_cpu_clock(&mut self, clock: Option<diagnostics::CpuClock>) {
+        self.diagnostic_cpu_clock = clock;
+    }
+
+    /// The same poll/drain, with partial observations retained on typed errors.
+    pub fn poll_curve_quality_observed(&mut self, device: &Device) -> (Result<()>, diagnostics::QualityObservation) {
+        let mut observation = diagnostics::QualityObservation {
+            available: self.diagnostic_cpu_clock.is_some(), ..Default::default()
+        };
+        let result = self.poll_curve_quality_inner(device, &mut observation);
+        (result, observation)
+    }
+
+    fn poll_curve_quality_inner(&mut self, device: &Device, observation: &mut diagnostics::QualityObservation) -> Result<()> {
+        let sample = diagnostics::Sample::start(self.diagnostic_cpu_clock);
+        let polled = device.poll(wgpu::PollType::Poll);
+        observation.driver_poll.add(sample.finish());
+        if polled.is_err() {
             // Device loss makes every pending frame unqualified; retire all counter buffers.
             for pending in self.pending_bump.drain(..) {
                 self.engine.free_download(pending.buffer);
@@ -943,6 +970,13 @@ impl Renderer {
                 break;
             }
             let pending = self.pending_bump.pop_front().unwrap();
+            if let Some(ready) = &pending.diagnostic_ready {
+                if let Some(elapsed) = ready.elapsed() {
+                    *observation.map_ready_wall.get_or_insert(std::time::Duration::ZERO) += elapsed;
+                    observation.map_callbacks += 1;
+                }
+            }
+            let sample = diagnostics::Sample::start(self.diagnostic_cpu_clock);
             let needed = if state == 1 {
                 self.engine.get_download(pending.buffer).and_then(|buffer| {
                     let needed = buffer
@@ -958,10 +992,19 @@ impl Renderer {
             };
             self.engine.free_download(pending.buffer);
             self.pending_bump_bytes -= pending.bytes;
-            self.accept_bump(
-                needed.ok_or(Error::CurveQualityReadbackFailed)?,
-                effective_storage_limit(device),
-            )?;
+            if observation.available {
+                if state == 1 {
+                    observation.mapped_buffers += 1;
+                    observation.mapped_bytes += pending.bytes;
+                } else {
+                    observation.failed_readbacks += 1;
+                }
+            }
+            let accepted = needed
+                .ok_or(Error::CurveQualityReadbackFailed)
+                .and_then(|needed| self.accept_bump(needed, effective_storage_limit(device)));
+            observation.map.add(sample.finish());
+            accepted?;
         }
         Ok(())
     }
@@ -995,9 +1038,12 @@ impl Renderer {
         let bytes = download.size();
         let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let flag = state.clone();
+        let diagnostic_ready = self.diagnostic_cpu_clock.map(|_|diagnostics::ReadbackReady::new());
+        let callback_ready = diagnostic_ready.clone();
         download
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
+                if let Some(ready) = callback_ready { ready.notify(); }
                 flag.store(
                     if result.is_ok() { 1 } else { 2 },
                     std::sync::atomic::Ordering::Release,
@@ -1008,6 +1054,7 @@ impl Renderer {
             buffer,
             state,
             bytes,
+            diagnostic_ready,
         });
         Ok(())
     }

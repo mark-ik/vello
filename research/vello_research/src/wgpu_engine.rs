@@ -29,6 +29,8 @@ struct UninitialisedShader {
 
 #[derive(Default)]
 pub(crate) struct WgpuEngine {
+    /// Explicit diagnostic mode only; no default GPU queries or extra submits.
+    pub(crate) diagnostic_gpu: Option<std::sync::Arc<std::sync::Mutex<crate::diagnostics::gpu::GpuState>>>,
     shaders: Vec<Shader>,
     pool: ResourcePool,
     bind_map: BindMap,
@@ -393,6 +395,9 @@ impl WgpuEngine {
 
         let mut encoder =
             device.create_command_encoder(&CommandEncoderDescriptor { label: Some(label) });
+        let diagnostic_gpu = crate::diagnostics::gpu::begin(
+            &self.diagnostic_gpu, device, queue, &mut encoder,
+        );
         #[cfg(feature = "wgpu-profiler")]
         let query = profiler.begin_query(label, &mut encoder);
         for command in &recording.commands {
@@ -764,7 +769,13 @@ impl WgpuEngine {
         // TODO: This only actually needs to happen once per frame, but run_recording happens two or three times
         #[cfg(feature = "wgpu-profiler")]
         profiler.resolve_queries(&mut encoder);
+        if let Some(probe) = &diagnostic_gpu {
+            probe.end(&mut encoder);
+        }
         queue.submit(Some(encoder.finish()));
+        if let Some(probe) = diagnostic_gpu {
+            probe.submitted();
+        }
         for id in free_bufs {
             if let Some(buf) = self.bind_map.buf_map.remove(&id)
                 && let MaterializedBuffer::Gpu(gpu_buf) = buf.buffer
