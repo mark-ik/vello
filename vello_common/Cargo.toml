@@ -1,14 +1,17 @@
 [package]
-name = "vello_common"
+name = "netrender-vello-common"
 # When updating, also update the version in the workspace dependency in the root Cargo.toml
 version = "0.3.0"
-description = "Core data structures and utilities shared across the Vello rendering, including geometry processing and tiling logic."
+description = "Netrender's Vello sparse strips 0.3 core: geometry processing and tiling shared by the sparse renderers, with exact curve refusal (`FlattenError`) and a 1/16 px flattening tolerance. Library name `vello_common`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello_common"
 
 [package.metadata.docs.rs]
 all-features = true

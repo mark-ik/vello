@@ -1352,22 +1352,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glifo"
-version = "0.4.0"
-dependencies = [
- "bytemuck",
- "core_maths",
- "foldhash 0.2.0",
- "hashbrown 0.17.1",
- "log",
- "peniko",
- "png",
- "skrifa 0.44.0",
- "smallvec",
- "vello_common",
-]
-
-[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2462,9 +2446,9 @@ dependencies = [
  "console_log",
  "js-sys",
  "log",
- "vello_common",
+ "netrender-vello-common",
+ "netrender-vello-gpu",
  "vello_example_scenes",
- "vello_gpu",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -2502,6 +2486,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "netrender-glifo"
+version = "0.4.0"
+dependencies = [
+ "bytemuck",
+ "core_maths",
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+ "log",
+ "netrender-vello-common",
+ "peniko",
+ "png",
+ "skrifa 0.44.0",
+ "smallvec",
+]
+
+[[package]]
 name = "netrender-vello"
 version = "0.11.0"
 dependencies = [
@@ -2520,6 +2520,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "netrender-vello-common"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "fearless_simd",
+ "guillotiere",
+ "libm",
+ "log",
+ "peniko",
+ "png",
+ "roxmltree 0.20.0",
+ "smallvec",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "netrender-vello-cpu"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "crossbeam-channel",
+ "fearless_simd",
+ "hashbrown 0.17.1",
+ "log",
+ "netrender-glifo",
+ "netrender-vello-common",
+ "ordered-channel",
+ "png",
+ "rayon",
+ "thread_local",
+]
+
+[[package]]
 name = "netrender-vello-encoding"
 version = "0.11.0"
 dependencies = [
@@ -2528,6 +2561,36 @@ dependencies = [
  "peniko",
  "skrifa 0.44.0",
  "smallvec",
+]
+
+[[package]]
+name = "netrender-vello-gpu"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "hashbrown 0.17.1",
+ "js-sys",
+ "log",
+ "netrender-glifo",
+ "netrender-vello-common",
+ "netrender-vello-gpu-shaders",
+ "png",
+ "pollster",
+ "roxmltree 0.20.0",
+ "thiserror 2.0.18",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
+name = "netrender-vello-gpu-shaders"
+version = "0.3.0"
+dependencies = [
+ "naga",
+ "wesl",
+ "wesl-macros",
+ "wgsl-parse",
+ "wgsl-types",
 ]
 
 [[package]]
@@ -4476,55 +4539,22 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "image",
+ "netrender-vello-common",
+ "netrender-vello-cpu",
  "parley",
  "rand",
  "smallvec",
  "usvg",
- "vello_common",
- "vello_cpu",
  "vello_dev_macros",
-]
-
-[[package]]
-name = "vello_common"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "fearless_simd",
- "guillotiere",
- "libm",
- "log",
- "peniko",
- "png",
- "roxmltree 0.20.0",
- "smallvec",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "vello_cpu"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "crossbeam-channel",
- "fearless_simd",
- "glifo",
- "hashbrown 0.17.1",
- "log",
- "ordered-channel",
- "png",
- "rayon",
- "thread_local",
- "vello_common",
 ]
 
 [[package]]
 name = "vello_cpu_winit"
 version = "0.0.0"
 dependencies = [
+ "netrender-vello-common",
+ "netrender-vello-cpu",
  "softbuffer",
- "vello_common",
- "vello_cpu",
  "vello_example_scenes",
  "winit",
 ]
@@ -4545,57 +4575,27 @@ dependencies = [
  "bytemuck",
  "console_error_panic_hook",
  "console_log",
- "glifo",
  "image",
  "log",
+ "netrender-glifo",
+ "netrender-vello-common",
+ "netrender-vello-cpu",
+ "netrender-vello-gpu",
  "parley",
  "skrifa 0.44.0",
  "smallvec",
- "vello_common",
- "vello_cpu",
- "vello_gpu",
  "wasm-bindgen",
  "web-sys",
-]
-
-[[package]]
-name = "vello_gpu"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "glifo",
- "hashbrown 0.17.1",
- "js-sys",
- "log",
- "png",
- "pollster",
- "roxmltree 0.20.0",
- "thiserror 2.0.18",
- "vello_common",
- "vello_gpu_shaders",
- "web-sys",
- "wgpu",
-]
-
-[[package]]
-name = "vello_gpu_shaders"
-version = "0.3.0"
-dependencies = [
- "naga",
- "wesl",
- "wesl-macros",
- "wgsl-parse",
- "wgsl-types",
 ]
 
 [[package]]
 name = "vello_gpu_winit"
 version = "0.0.0"
 dependencies = [
+ "netrender-vello-common",
+ "netrender-vello-gpu",
  "pollster",
- "vello_common",
  "vello_example_scenes",
- "vello_gpu",
  "wgpu",
  "winit",
 ]
@@ -4623,18 +4623,18 @@ version = "0.0.0"
 dependencies = [
  "bytemuck",
  "fearless_simd",
- "glifo",
  "image",
+ "netrender-glifo",
+ "netrender-vello-common",
+ "netrender-vello-cpu",
+ "netrender-vello-gpu",
  "oxipng",
  "pollster",
  "serde",
  "serde_json",
  "skrifa 0.44.0",
  "smallvec",
- "vello_common",
- "vello_cpu",
  "vello_dev_macros",
- "vello_gpu",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -4649,10 +4649,10 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "image",
+ "netrender-vello-common",
+ "netrender-vello-cpu",
  "svg",
  "usvg",
- "vello_common",
- "vello_cpu",
 ]
 
 [[package]]
@@ -4846,8 +4846,8 @@ dependencies = [
  "console_log",
  "js-sys",
  "log",
- "vello_common",
- "vello_cpu",
+ "netrender-vello-common",
+ "netrender-vello-cpu",
  "vello_example_scenes",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5242,9 +5242,9 @@ dependencies = [
  "console_log",
  "js-sys",
  "log",
- "vello_common",
+ "netrender-vello-common",
+ "netrender-vello-gpu",
  "vello_example_scenes",
- "vello_gpu",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5259,9 +5259,9 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "log",
- "vello_common",
+ "netrender-vello-common",
+ "netrender-vello-gpu",
  "vello_example_scenes",
- "vello_gpu",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

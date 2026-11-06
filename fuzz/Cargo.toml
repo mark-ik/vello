@@ -11,8 +11,8 @@ cargo-fuzz = true
 arbitrary = { version = "1.4.2", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 libfuzzer-sys = "0.4.13"
-vello_common = { path = "../vello_common", features = ["std", "png"] }
-vello_cpu = { path = "../vello_cpu", features = ["f32_pipeline", "std"] }
+vello_common = { package = "netrender-vello-common", path = "../vello_common", features = ["std", "png"] }
+vello_cpu = { package = "netrender-vello-cpu", path = "../vello_cpu", features = ["f32_pipeline", "std"] }
 vello_tests = { path = "../vello_tests" }
 
 [[bin]]

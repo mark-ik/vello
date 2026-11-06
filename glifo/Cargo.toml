@@ -1,13 +1,16 @@
 [package]
-name = "glifo"
+name = "netrender-glifo"
 version = "0.4.0"
-description = "Glifo provides APIs for efficiently rendering text."
+description = "Netrender's Glifo 0.4 text rendering APIs for the Vello sparse strips renderers, built on netrender-vello-common. Library name `glifo`."
 keywords = ["text", "layout"]
 categories = ["gui", "graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "glifo"
 
 [package.metadata.docs.rs]
 all-features = true

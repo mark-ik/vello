@@ -1,14 +1,17 @@
 [package]
-name = "vello_gpu_shaders"
+name = "netrender-vello-gpu-shaders"
 # When updating, also update the version in the workspace dependency in the root Cargo.toml
 version = "0.3.0"
-description = "Provide WESL shaders linked to WGSL and GLSL for the `vello_gpu` backends."
+description = "Netrender's Vello sparse strips 0.3 WESL shaders, linked to WGSL and GLSL for the `vello_gpu` backends. Library name `vello_gpu_shaders`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello_gpu_shaders"
 
 [package.metadata.docs.rs]
 all-features = true

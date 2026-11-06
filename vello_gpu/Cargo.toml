@@ -1,13 +1,16 @@
 [package]
-name = "vello_gpu"
+name = "netrender-vello-gpu"
 version = "0.3.0"
-description = "A GPU renderer for Vello with CPU-side preprocessing."
+description = "Netrender's Vello sparse strips 0.3 GPU renderer with CPU-side preprocessing, built on netrender-vello-common. Library name `vello_gpu`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello_gpu"
 
 [package.metadata.docs.rs]
 all-features = true

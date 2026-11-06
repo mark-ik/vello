@@ -1,13 +1,16 @@
 [package]
-name = "vello_cpu"
+name = "netrender-vello-cpu"
 version = "0.3.0"
-description = "A CPU-based renderer for Vello, optimized for SIMD and multithreaded execution."
+description = "Netrender's Vello sparse strips 0.3 CPU renderer, optimized for SIMD and multithreaded execution, built on netrender-vello-common. Library name `vello_cpu`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello_cpu"
 
 [package.metadata.docs.rs]
 all-features = true
