@@ -4,13 +4,13 @@
 
 **Shared data structures**
 
-[![Latest published version.](https://img.shields.io/crates/v/vello_common.svg)](https://crates.io/crates/vello_common)
-[![Documentation build status.](https://img.shields.io/docsrs/vello_common.svg)](https://docs.rs/vello_common)
+[![Latest published version.](https://img.shields.io/crates/v/netrender-sparse.svg)](https://crates.io/crates/netrender-sparse)
+[![Documentation build status.](https://img.shields.io/docsrs/netrender-sparse.svg)](https://docs.rs/netrender-sparse)
 [![Apache 2.0 or MIT license.](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](#license)
 \
 [![Linebender Zulip chat.](https://img.shields.io/badge/Linebender-%23vello-blue?logo=Zulip)](https://xi.zulipchat.com/#narrow/channel/197075-vello)
 [![GitHub Actions CI status.](https://img.shields.io/github/actions/workflow/status/linebender/vello/ci.yml?logo=github&label=CI)](https://github.com/linebender/vello/actions)
-[![Dependency staleness status.](https://deps.rs/crate/vello_common/latest/status.svg)](https://deps.rs/crate/vello_common)
+[![Dependency staleness status.](https://deps.rs/crate/netrender-sparse/latest/status.svg)](https://deps.rs/crate/netrender-sparse)
 
 </div>
 
@@ -23,7 +23,7 @@ Full documentation at https://github.com/orium/cargo-rdme -->
 See https://linebender.org/blog/doc-include/ for related discussion. -->
 
 [libm]: https://crates.io/crates/libm
-[crate::pixmap::Pixmap]: https://docs.rs/vello_common/latest/vello_common/pixmap/struct.Pixmap.html
+[crate::pixmap::Pixmap]: https://docs.rs/netrender-sparse/latest/vello_common/pixmap/struct.Pixmap.html
 <!-- cargo-rdme start -->
 
 This crate includes common geometry representations, tiling logic, and other fundamental components used by both [Vello CPU][vello_cpu] and [Vello GPU][vello_gpu].
@@ -52,8 +52,8 @@ At least one of `std` and `libm` is required; `std` overrides `libm`.
 
 This crate acts as a foundation for `vello_cpu` and `vello_gpu`, providing essential components to minimize duplication.
 
-[vello_cpu]: https://crates.io/crates/vello_cpu
-[vello_gpu]: https://crates.io/crates/vello_gpu
+[vello_cpu]: https://crates.io/crates/netrender-cpu
+[vello_gpu]: https://crates.io/crates/netrender-gpu
 
 <!-- cargo-rdme end -->
 

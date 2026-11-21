@@ -18,9 +18,9 @@ Full documentation at https://github.com/orium/cargo-rdme -->
 <!-- Intra-doc links used in lib.rs should be evaluated here.
 See https://linebender.org/blog/doc-include/ for related discussion. -->
 
-[`Resources`]: https://docs.rs/vello_gpu/latest/vello_gpu/struct.Resources.html
+[`Resources`]: https://docs.rs/netrender-gpu/latest/vello_gpu/struct.Resources.html
 [`Scene::glyph_run`]:
-  https://docs.rs/vello_gpu/latest/vello_gpu/struct.Scene.html#method.glyph_run
+  https://docs.rs/netrender-gpu/latest/vello_gpu/struct.Scene.html#method.glyph_run
 
 <!-- cargo-rdme start -->
 

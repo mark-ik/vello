@@ -4,12 +4,12 @@
 
 **CPU-based renderer**
 
-[![Latest published version.](https://img.shields.io/crates/v/vello_cpu.svg)](https://crates.io/crates/vello_cpu)
-[![Documentation build status.](https://img.shields.io/docsrs/vello_cpu.svg)](https://docs.rs/vello_cpu)
+[![Latest published version.](https://img.shields.io/crates/v/netrender-cpu.svg)](https://crates.io/crates/netrender-cpu)
+[![Documentation build status.](https://img.shields.io/docsrs/netrender-cpu.svg)](https://docs.rs/netrender-cpu)
 [![Apache 2.0 or MIT license.](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](#license)
 \
 [![Linebender Zulip chat.](https://img.shields.io/badge/Linebender-%23vello-blue?logo=Zulip)](https://xi.zulipchat.com/#narrow/channel/197075-vello) [![GitHub Actions CI status.](https://img.shields.io/github/actions/workflow/status/linebender/vello/ci.yml?logo=github&label=CI)](https://github.com/linebender/vello/actions)
-[![Dependency staleness status.](https://deps.rs/crate/vello_cpu/latest/status.svg)](https://deps.rs/crate/vello_cpu)
+[![Dependency staleness status.](https://deps.rs/crate/netrender-cpu/latest/status.svg)](https://deps.rs/crate/netrender-cpu)
 
 </div>
 
@@ -22,23 +22,23 @@ Full documentation at https://github.com/orium/cargo-rdme -->
 See https://linebender.org/blog/doc-include/ for related discussion. -->
 
 [`RenderContext`]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/struct.RenderContext.html
+  https://docs.rs/netrender-cpu/latest/vello_cpu/struct.RenderContext.html
 [RenderContext::set_paint]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/struct.RenderContext.html#method.set_paint
+  https://docs.rs/netrender-cpu/latest/vello_cpu/struct.RenderContext.html#method.set_paint
 [RenderContext::fill_path]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/struct.RenderContext.html#method.fill_path
+  https://docs.rs/netrender-cpu/latest/vello_cpu/struct.RenderContext.html#method.fill_path
 [RenderContext::stroke_path]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/struct.RenderContext.html#method.stroke_path
+  https://docs.rs/netrender-cpu/latest/vello_cpu/struct.RenderContext.html#method.stroke_path
 [RenderContext::glyph_run]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/struct.RenderContext.html#method.glyph_run
+  https://docs.rs/netrender-cpu/latest/vello_cpu/struct.RenderContext.html#method.glyph_run
 [RenderMode::OptimizeSpeed]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/enum.RenderMode.html#variant.OptimizeSpeed
+  https://docs.rs/netrender-cpu/latest/vello_cpu/enum.RenderMode.html#variant.OptimizeSpeed
 [RenderMode::OptimizeQuality]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/enum.RenderMode.html#variant.OptimizeQuality
+  https://docs.rs/netrender-cpu/latest/vello_cpu/enum.RenderMode.html#variant.OptimizeQuality
 [`RenderContext::render`]:
-  https://docs.rs/vello_cpu/latest/vello_cpu/struct.RenderContext.html#method.render
-[`Pixmap`]: https://docs.rs/vello_cpu/latest/vello_cpu/struct.Pixmap.html
-[`Resources`]: https://docs.rs/vello_cpu/latest/vello_cpu/struct.Resources.html
+  https://docs.rs/netrender-cpu/latest/vello_cpu/struct.RenderContext.html#method.render
+[`Pixmap`]: https://docs.rs/netrender-cpu/latest/vello_cpu/struct.Pixmap.html
+[`Resources`]: https://docs.rs/netrender-cpu/latest/vello_cpu/struct.Resources.html
 
 <!-- cargo-rdme start -->
 
@@ -47,7 +47,7 @@ or underpowered GPUs.
 
 We also develop:
 
-1. [Vello GPU](https://crates.io/crates/vello_gpu), which shares Vello CPU's
+1. [Vello GPU](https://crates.io/crates/netrender-gpu), which shares Vello CPU's
    architecture but moves rasterization and compositing to the GPU.
 2. [Vello Research], an experimental, high-performance, compute-centric GPU
    renderer.

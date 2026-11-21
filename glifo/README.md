@@ -4,13 +4,13 @@
 
 **APIs for efficiently rendering text**
 
-[![Latest published version.](https://img.shields.io/crates/v/glifo.svg)](https://crates.io/crates/glifo)
-[![Documentation build status.](https://img.shields.io/docsrs/glifo.svg)](https://docs.rs/glifo)
+[![Latest published version.](https://img.shields.io/crates/v/netrender-glifo.svg)](https://crates.io/crates/netrender-glifo)
+[![Documentation build status.](https://img.shields.io/docsrs/netrender-glifo.svg)](https://docs.rs/netrender-glifo)
 [![Apache 2.0 or MIT license.](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](#license)
 \
 [![Linebender Zulip chat.](https://img.shields.io/badge/Linebender-%23vello-blue?logo=Zulip)](https://xi.zulipchat.com/#narrow/channel/197075-vello)
 [![GitHub Actions CI status.](https://img.shields.io/github/actions/workflow/status/linebender/vello/ci.yml?logo=github&label=CI)](https://github.com/linebender/vello/actions)
-[![Dependency staleness status.](https://deps.rs/crate/glifo/latest/status.svg)](https://deps.rs/crate/glifo)
+[![Dependency staleness status.](https://deps.rs/crate/netrender-glifo/latest/status.svg)](https://deps.rs/crate/netrender-glifo)
 
 </div>
 
