@@ -1,5 +1,5 @@
 [package]
-name = "netrender-vello-common"
+name = "netrender-sparse"
 # When updating, also update the version in the workspace dependency in the root Cargo.toml
 version = "0.3.0"
 description = "Netrender's Vello sparse strips 0.3 core: geometry processing and tiling shared by the sparse renderers, with exact curve refusal (`FlattenError`) and a 1/16 px flattening tolerance. Library name `vello_common`."

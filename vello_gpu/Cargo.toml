@@ -1,7 +1,7 @@
 [package]
-name = "netrender-vello-gpu"
+name = "netrender-gpu"
 version = "0.3.0"
-description = "Netrender's Vello sparse strips 0.3 GPU renderer with CPU-side preprocessing, built on netrender-vello-common. Library name `vello_gpu`."
+description = "Netrender's Vello sparse strips 0.3 GPU renderer with CPU-side preprocessing, built on netrender-sparse. Library name `vello_gpu`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true

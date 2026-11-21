@@ -1,5 +1,5 @@
 [package]
-name = "netrender-vello-gpu-shaders"
+name = "netrender-wesl"
 # When updating, also update the version in the workspace dependency in the root Cargo.toml
 version = "0.3.0"
 description = "Netrender's Vello sparse strips 0.3 WESL shaders, linked to WGSL and GLSL for the `vello_gpu` backends. Library name `vello_gpu_shaders`."

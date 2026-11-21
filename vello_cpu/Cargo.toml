@@ -1,7 +1,7 @@
 [package]
-name = "netrender-vello-cpu"
+name = "netrender-cpu"
 version = "0.3.0"
-description = "Netrender's Vello sparse strips 0.3 CPU renderer, optimized for SIMD and multithreaded execution, built on netrender-vello-common. Library name `vello_cpu`."
+description = "Netrender's Vello sparse strips 0.3 CPU renderer, optimized for SIMD and multithreaded execution, built on netrender-sparse. Library name `vello_cpu`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true

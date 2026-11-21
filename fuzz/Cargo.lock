@@ -1049,6 +1049,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "netrender-cpu"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "crossbeam-channel",
+ "hashbrown 0.17.1",
+ "log",
+ "netrender-glifo",
+ "netrender-sparse",
+ "ordered-channel",
+ "png",
+ "rayon",
+ "thread_local",
+]
+
+[[package]]
 name = "netrender-glifo"
 version = "0.4.0"
 dependencies = [
@@ -1056,7 +1072,7 @@ dependencies = [
  "foldhash 0.2.0",
  "hashbrown 0.17.1",
  "log",
- "netrender-vello-common",
+ "netrender-sparse",
  "peniko",
  "png",
  "skrifa",
@@ -1064,7 +1080,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "netrender-vello-common"
+name = "netrender-gpu"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "hashbrown 0.17.1",
+ "log",
+ "netrender-glifo",
+ "netrender-sparse",
+ "netrender-wesl",
+ "thiserror",
+ "wgpu",
+]
+
+[[package]]
+name = "netrender-sparse"
 version = "0.3.0"
 dependencies = [
  "bytemuck",
@@ -1078,37 +1108,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "netrender-vello-cpu"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "crossbeam-channel",
- "hashbrown 0.17.1",
- "log",
- "netrender-glifo",
- "netrender-vello-common",
- "ordered-channel",
- "png",
- "rayon",
- "thread_local",
-]
-
-[[package]]
-name = "netrender-vello-gpu"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "hashbrown 0.17.1",
- "log",
- "netrender-glifo",
- "netrender-vello-common",
- "netrender-vello-gpu-shaders",
- "thiserror",
- "wgpu",
-]
-
-[[package]]
-name = "netrender-vello-gpu-shaders"
+name = "netrender-wesl"
 version = "0.3.0"
 dependencies = [
  "naga",
@@ -1822,8 +1822,8 @@ dependencies = [
  "arbitrary",
  "image",
  "libfuzzer-sys",
- "netrender-vello-common",
- "netrender-vello-cpu",
+ "netrender-cpu",
+ "netrender-sparse",
  "vello_tests",
 ]
 
@@ -1843,10 +1843,10 @@ dependencies = [
  "bytemuck",
  "fearless_simd",
  "image",
+ "netrender-cpu",
  "netrender-glifo",
- "netrender-vello-common",
- "netrender-vello-cpu",
- "netrender-vello-gpu",
+ "netrender-gpu",
+ "netrender-sparse",
  "oxipng",
  "pollster",
  "serde",
