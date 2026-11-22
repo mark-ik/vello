@@ -113,3 +113,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod spirv_tests;

@@ -226,9 +226,12 @@ var gradient_texture: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance) -> VertexOutput {
-    var out: VertexOutput;
-    out.sample_xy = vec2(0.0);
-    out.payload = instance.payload;
+    // Naga 30 emits invalid SPIR-V layout decorations for function-local
+    // struct storage. Construct the vertex output only once, as a value.
+    var sample_xy = vec2(0.0);
+    var payload = instance.payload;
+    var dense_end_or_rect_size: u32;
+    var rect_frac: u32;
     // Map vertex_index (0-3) to quad corners:
     // 0 → (0,0), 1 → (1,0), 2 → (0,1), 3 → (1,1)
     let corner = quad_corner(in_vertex_index);
@@ -246,11 +249,11 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance)
     var height = config.strip_height;
     if is_rect {
         height = dense_width;
-        out.dense_end_or_rect_size = width | (dense_width << 16u);
-        out.rect_frac = instance.col_idx_or_rect_frac;
+        dense_end_or_rect_size = width | (dense_width << 16u);
+        rect_frac = instance.col_idx_or_rect_frac;
     } else {
-        out.dense_end_or_rect_size = instance.col_idx_or_rect_frac + dense_width;
-        out.rect_frac = 0u;
+        dense_end_or_rect_size = instance.col_idx_or_rect_frac + dense_width;
+        rect_frac = 0u;
     }
     // Calculate the pixel coordinates of the current vertex within the strip.
     // Don't forget to apply the strip offset!
@@ -287,9 +290,9 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance)
                         f32(scene_strip.x) + x * f32(width),
                         f32(scene_strip.y) + y * f32(height),
                     );
-                out.sample_xy = get_native_image_translate(image_texel1)
+                sample_xy = get_native_image_translate(image_texel1)
                     + get_native_image_transform(image_texel0) * pos;
-                out.payload = get_native_image_opacity(image_texel1);
+                payload = get_native_image_opacity(image_texel1);
             }
             @if(full_image_support)
             case PAINT_TYPE_IMAGE {
@@ -317,11 +320,11 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance)
                         f32(scene_strip.x) + x * f32(width),
                         f32(scene_strip.y) + y * f32(height),
                     );
-                out.sample_xy = get_image_translate(image_texel1, image_texel2)
+                sample_xy = get_image_translate(image_texel1, image_texel2)
                     + get_image_transform(image_texel0, image_texel1) * pos;
             }
             case PAINT_TYPE_LINEAR_GRADIENT, PAINT_TYPE_RADIAL_GRADIENT {
-                out.sample_xy = get_gradient_sample_xy(
+                sample_xy = get_gradient_sample_xy(
                         encoded_paints_texture,
                         config.encoded_paints_tex_width_bits,
                         instance.paint_and_rect_flag,
@@ -333,7 +336,7 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance)
             }
             @if(gradient_sweep)
             case PAINT_TYPE_SWEEP_GRADIENT {
-                out.sample_xy = get_gradient_sample_xy(
+                sample_xy = get_gradient_sample_xy(
                         encoded_paints_texture,
                         config.encoded_paints_tex_width_bits,
                         instance.paint_and_rect_flag,
@@ -345,7 +348,7 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance)
             }
             @if(blurred_rounded_rect)
             case PAINT_TYPE_BLURRED_ROUNDED_RECT {
-                out.sample_xy = get_blurred_rounded_rect_sample_xy(
+                sample_xy = get_blurred_rounded_rect_sample_xy(
                         scene_strip,
                         corner,
                         width,
@@ -356,21 +359,26 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance)
         }
     } else if color_source == COLOR_SOURCE_LAYER {
         let source = unpack_u16_pair(instance.payload);
-        out.sample_xy = vec2<f32>(f32(source.x) + x * f32(width), f32(source.y) + y * f32(height));
+        sample_xy = vec2<f32>(f32(source.x) + x * f32(width), f32(source.y) + y * f32(height));
     }
 
     let col_offset = select(f32(instance.col_idx_or_rect_frac), 0.0, is_rect);
-    out.tex_coord = vec2<f32>(col_offset + x * f32(width), y * f32(height));
+    let tex_coord = vec2<f32>(col_offset + x * f32(width), y * f32(height));
 
     // Divide by a power of 2 to ensure exact f32 arithmetic (and divide by the expected depth
     // buffer precision of 24 bits).
     let z = 1.0 - f32(instance.depth_index) / f32(1u << 24u);
     // Flip it based on the flag.
     let final_ndc_y = select(ndc.y, -ndc.y, config.ndc_y_negate != 0u);
-    out.position = vec4<f32>(ndc.x, final_ndc_y, z, 1.0);
-    out.paint_and_rect_flag = instance.paint_and_rect_flag;
-
-    return out;
+    return VertexOutput(
+        instance.paint_and_rect_flag,
+        tex_coord,
+        sample_xy,
+        dense_end_or_rect_size,
+        payload,
+        rect_frac,
+        vec4<f32>(ndc.x, final_ndc_y, z, 1.0),
+    );
 }
 
 @group(0) @binding(0)
