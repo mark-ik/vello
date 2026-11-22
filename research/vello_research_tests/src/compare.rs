@@ -116,7 +116,7 @@ pub async fn compare_gpu_cpu(scene: Scene, mut params: TestParams) -> Result<Gpu
     let gpu_dir = path_root.join("gpu");
     std::fs::create_dir_all(&gpu_dir)?;
     let cpu_path = cpu_dir.join(&params.name).with_extension(".png");
-    let gpu_path = path_root.join(&params.name).with_extension(".png");
+    let gpu_path = gpu_dir.join(&params.name).with_extension(".png");
 
     assert!(gpu_rendered.width == cpu_rendered.width && gpu_rendered.height == cpu_rendered.height,);
 
@@ -124,11 +124,11 @@ pub async fn compare_gpu_cpu(scene: Scene, mut params: TestParams) -> Result<Gpu
     assert_eq!(cpu_rendered.format, ImageFormat::Rgba8);
     assert_eq!(gpu_rendered.format, ImageFormat::Rgba8);
     let gpu_rendered_data: DynamicImage = image::RgbaImage::from_raw(
-        cpu_rendered.width,
-        cpu_rendered.height,
-        cpu_rendered.data.as_ref().to_vec(),
+        gpu_rendered.width,
+        gpu_rendered.height,
+        gpu_rendered.data.as_ref().to_vec(),
     )
-    .ok_or(anyhow!("Couldn't create image for cpu result"))?
+    .ok_or(anyhow!("Couldn't create image for gpu result"))?
     .into();
     let gpu_rendered_data = gpu_rendered_data.to_rgb8();
 
