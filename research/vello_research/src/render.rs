@@ -87,28 +87,29 @@ pub(crate) fn render_full(
     shaders: &FullShaders,
     image_atlas: &mut Option<ImageProxy>,
     params: &RenderParams,
-) -> (Recording, ResourceProxy) {
-    render_encoding_full(scene.encoding(), resolver, shaders, image_atlas, params)
+    options: CoarseOptions,
+) -> (Recording, ResourceProxy, Option<BufferProxy>) {
+    let mut render = Render::new();
+    let mut recording = render.render_coarse(
+        scene.encoding(),
+        resolver,
+        shaders,
+        image_atlas,
+        params,
+        options,
+    );
+    let out_image = render.out_image();
+    let bump = options.download_counters.then(|| render.bump_buf());
+    render.record_fine(shaders, &mut recording);
+    (recording, out_image.into(), bump)
 }
 
-#[cfg(feature = "wgpu")]
-/// Create a single recording with both coarse and fine render stages.
-///
-/// This function is not recommended when the scene can be complex, as it does not
-/// implement robust dynamic memory.
-pub(crate) fn render_encoding_full(
-    encoding: &Encoding,
-    resolver: &mut Resolver,
-    shaders: &FullShaders,
-    image_atlas: &mut Option<ImageProxy>,
-    params: &RenderParams,
-) -> (Recording, ResourceProxy) {
-    let mut render = Render::new();
-    let mut recording =
-        render.render_encoding_coarse(encoding, resolver, shaders, image_atlas, params, false);
-    let out_image = render.out_image();
-    render.record_fine(shaders, &mut recording);
-    (recording, out_image.into())
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CoarseOptions {
+    pub max_spill_bytes: Option<u32>,
+    pub download_counters: bool,
+    #[cfg(feature = "debug_layers")]
+    pub capture_debug: bool,
 }
 
 impl Default for Render {
@@ -140,6 +141,30 @@ impl Render {
         persistent_image_atlas: &mut Option<ImageProxy>,
         params: &RenderParams,
         robust: bool,
+    ) -> Recording {
+        self.render_coarse(
+            encoding,
+            resolver,
+            shaders,
+            persistent_image_atlas,
+            params,
+            CoarseOptions {
+                download_counters: robust,
+                #[cfg(feature = "debug_layers")]
+                capture_debug: robust,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub(crate) fn render_coarse(
+        &mut self,
+        encoding: &Encoding,
+        resolver: &mut Resolver,
+        shaders: &FullShaders,
+        persistent_image_atlas: &mut Option<ImageProxy>,
+        params: &RenderParams,
+        options: CoarseOptions,
     ) -> Recording {
         use vello_encoding::RenderConfig;
         let mut recording = Recording::default();
@@ -201,8 +226,26 @@ impl Render {
         for image in images.images {
             recording.write_image(image_atlas, image.1, image.2, image.0.clone());
         }
-        let cpu_config =
+        let mut cpu_config =
             RenderConfig::new(&layout, params.width, params.height, &params.base_color);
+        if let Some(max_bytes) = options.max_spill_bytes {
+            let capacity = max_bytes / size_of::<u32>() as u32;
+            let default = cpu_config.buffer_sizes.blend_spill.len().min(capacity);
+            let tile_count = u64::from(cpu_config.gpu.width_in_tiles)
+                * u64::from(cpu_config.gpu.height_in_tiles);
+            let spill = if default < capacity
+                && spill_words(u64::from(layout.n_clips), tile_count) > u64::from(default)
+            {
+                blend_spill_words(layout.draw_tags(&packed), tile_count)
+            } else {
+                0
+            };
+            let size = vello_encoding::BufferSize::new(
+                spill.max(u64::from(default)).min(u64::from(capacity)) as u32,
+            );
+            cpu_config.buffer_sizes.blend_spill = size;
+            cpu_config.gpu.blend_size = size.len();
+        }
         // HACK: The coarse workgroup counts is the number of active bins.
         if (cpu_config.workgroup_counts.coarse.0
             * cpu_config.workgroup_counts.coarse.1
@@ -525,14 +568,14 @@ impl Render {
             image_atlas: ResourceProxy::Image(image_atlas),
             out_image,
         });
-        if robust {
+        if options.download_counters {
             recording.download(*bump_buf.as_buf().unwrap());
         }
         recording.free_resource(bump_buf);
 
         #[cfg(feature = "debug_layers")]
         {
-            if robust {
+            if options.capture_debug {
                 let path_bboxes = *path_bbox_buf.as_buf().unwrap();
                 let lines = *lines_buf.as_buf().unwrap();
                 recording.download(lines);
@@ -650,4 +693,31 @@ impl Render {
     pub fn take_captured_buffers(&mut self) -> Option<CapturedBuffers> {
         self.captured_buffers.take()
     }
+}
+
+// Global resolved nesting bounds the per-tile blend depth, including layers
+// emitted by color glyphs. Match the inline stack and tile dimensions in WGSL.
+fn blend_spill_words(tags: &[vello_encoding::DrawTag], tile_count: u64) -> u64 {
+    use vello_encoding::DrawTag;
+
+    let mut depth = 0_u64;
+    let mut max_depth = 0_u64;
+    for tag in tags {
+        match *tag {
+            DrawTag::BEGIN_CLIP => {
+                depth += 1;
+                max_depth = max_depth.max(depth);
+            }
+            DrawTag::END_CLIP => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    spill_words(max_depth, tile_count)
+}
+
+fn spill_words(depth: u64, tile_count: u64) -> u64 {
+    depth
+        .saturating_sub(4)
+        .saturating_mul(tile_count)
+        .saturating_mul(16 * 16)
 }

@@ -110,6 +110,30 @@ pub async fn get_scene_image(
     params: &TestParams,
     scene: &Scene,
 ) -> Result<ImageData, anyhow::Error> {
+    get_scene_sequence_images(params, &[scene], false)
+        .await
+        .map(|mut images| images.remove(0))
+}
+
+/// Read successive frames rendered with the same renderer and target.
+pub fn get_scene_sequence_images_sync(
+    params: &TestParams,
+    scenes: &[&Scene],
+) -> Result<Vec<ImageData>> {
+    pollster::block_on(get_scene_sequence_images(params, scenes, false))
+}
+
+/// Render one frame with allocation checks before reading the target.
+pub fn get_checked_scene_image_sync(params: &TestParams, scene: &Scene) -> Result<ImageData> {
+    pollster::block_on(get_scene_sequence_images(params, &[scene], true))
+        .map(|mut images| images.remove(0))
+}
+
+async fn get_scene_sequence_images(
+    params: &TestParams,
+    scenes: &[&Scene],
+    checked: bool,
+) -> Result<Vec<ImageData>> {
     let (device, queue) = &*WGPU_DEVICE_QUEUE;
     let mut renderer = vello::Renderer::new(
         device,
@@ -145,9 +169,28 @@ pub async fn get_scene_image(
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer
-        .render_to_texture(device, queue, scene, &view, &render_params)
-        .or_else(|_| bail!("Got non-Send/Sync error from rendering"))?;
+    let mut frames = Vec::with_capacity(scenes.len());
+    for scene in scenes {
+        let result = if checked {
+            renderer
+                .render_to_texture_checked(device, queue, scene, &view, &render_params)
+                .await
+        } else {
+            renderer.render_to_texture(device, queue, scene, &view, &render_params)
+        };
+        result.or_else(|error| bail!("Could not render test frame: {error}"))?;
+        frames.push(read_target(device, queue, &target, size)?);
+    }
+    Ok(frames)
+}
+
+fn read_target(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+    size: Extent3d,
+) -> Result<ImageData> {
+    let (width, height) = (size.width, size.height);
     let padded_byte_width = (width * 4).next_multiple_of(256);
     let buffer_size = padded_byte_width as u64 * height as u64;
     let buffer = device.create_buffer(&BufferDescriptor {

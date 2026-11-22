@@ -780,6 +780,26 @@ impl WgpuEngine {
         self.downloads.get(&buf.id)
     }
 
+    pub fn take_download(&mut self, buf: BufferProxy) -> Option<Buffer> {
+        self.downloads.remove(&buf.id)
+    }
+
+    pub fn max_pooled_storage_bytes(device: &Device) -> u32 {
+        let limits = device.limits();
+        let limit = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size)
+            .min(u64::from(u32::MAX));
+        // The pool rounds up to either a power of two or 1.5 times that power.
+        let power = 1 << limit.ilog2();
+        let intermediate = power + power / 2;
+        if intermediate <= limit {
+            intermediate as u32
+        } else {
+            power as u32
+        }
+    }
+
     pub fn free_download(&mut self, buf: BufferProxy) {
         self.downloads.remove(&buf.id);
     }

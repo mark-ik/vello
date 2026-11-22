@@ -285,6 +285,14 @@ pub enum Error {
     #[cfg(feature = "wgpu")]
     #[error("Failed to async map a buffer")]
     BufferAsyncError(#[from] wgpu::BufferAsyncError),
+    /// The frame did not fit the GPU's dynamic renderer buffers. The target was left untouched.
+    #[cfg(feature = "wgpu")]
+    #[error("GPU allocation shortfall: {needed:?}")]
+    AllocationShortfall { needed: BumpAllocators },
+    /// The renderer could not confirm that the frame's allocations succeeded.
+    #[cfg(feature = "wgpu")]
+    #[error("GPU allocation counters could not be read")]
+    AllocationReadbackUnavailable,
     /// Failed to download an internal buffer for debug visualization.
     #[cfg(feature = "wgpu")]
     #[cfg(feature = "debug_layers")]
@@ -481,12 +489,71 @@ impl Renderer {
         texture: &TextureView,
         params: &RenderParams,
     ) -> Result<()> {
-        let (recording, target) = render::render_full(
+        self.submit_frame(device, queue, scene, texture, params, false)?;
+        Ok(())
+    }
+
+    /// Renders to the same target as [`Self::render_to_texture`] and checks its GPU allocations.
+    ///
+    /// An allocation shortfall leaves the target untouched and returns the GPU's counters.
+    /// This waits for readback, including a bounded device wait on native platforms.
+    pub async fn render_to_texture_checked(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+    ) -> Result<()> {
+        let download = self
+            .submit_frame(device, queue, scene, texture, params, true)?
+            .ok_or(Error::AllocationReadbackUnavailable)?;
+        let slice = download.slice(..size_of::<BumpAllocators>() as u64);
+        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(10)),
+            })
+            .map_err(|_| Error::AllocationReadbackUnavailable)?;
+        receiver
+            .receive()
+            .await
+            .ok_or(Error::AllocationReadbackUnavailable)??;
+        let mapped = slice
+            .get_mapped_range()
+            .map_err(|_| Error::AllocationReadbackUnavailable)?;
+        let needed: BumpAllocators = bytemuck::pod_read_unaligned(&mapped);
+        if needed.failed != 0 {
+            return Err(Error::AllocationShortfall { needed });
+        }
+        Ok(())
+    }
+
+    fn submit_frame(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        checked: bool,
+    ) -> Result<Option<wgpu::Buffer>> {
+        let (recording, target, counters) = render::render_full(
             scene,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
             params,
+            render::CoarseOptions {
+                max_spill_bytes: Some(WgpuEngine::max_pooled_storage_bytes(device)),
+                download_counters: checked,
+                ..Default::default()
+            },
         );
         let external_resources = [ExternalResource::Image(
             *target.as_image().unwrap(),
@@ -513,7 +580,7 @@ impl Renderer {
             }
         }
 
-        Ok(())
+        Ok(counters.and_then(|proxy| self.engine.take_download(proxy)))
     }
 
     /// Overwrite `image` with `texture`.
@@ -730,13 +797,18 @@ impl Renderer {
         // Currently this is always enabled when the `debug_layers` setting is enabled as the bump
         // counts are used for debug visualiation.
         let robust = cfg!(feature = "debug_layers");
-        let recording = render.render_encoding_coarse(
+        let recording = render.render_coarse(
             encoding,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
             params,
-            robust,
+            render::CoarseOptions {
+                max_spill_bytes: Some(WgpuEngine::max_pooled_storage_bytes(device)),
+                download_counters: robust,
+                #[cfg(feature = "debug_layers")]
+                capture_debug: robust,
+            },
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();
