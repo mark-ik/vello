@@ -1,6 +1,8 @@
 // Copyright 2026 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+//! First-frame spill sizing and shortfall reporting for the Classic renderer.
+
 use vello::{
     Scene,
     kurbo::{Affine, Rect},
