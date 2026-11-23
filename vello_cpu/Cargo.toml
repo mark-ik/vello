@@ -1,7 +1,7 @@
 [package]
 name = "netrender-cpu"
-version = "0.3.0"
-description = "Netrender's Vello sparse strips 0.3 CPU renderer, optimized for SIMD and multithreaded execution, built on netrender-sparse. Library name `vello_cpu`."
+version = "0.4.0"
+description = "Netrender's Vello sparse strips 0.4 CPU renderer, optimized for SIMD and multithreaded execution, built on netrender-sparse. Library name `vello_cpu`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
@@ -24,6 +24,9 @@ bytemuck = { workspace = true }
 glifo = { workspace = true, default-features = false, optional = true }
 vello_common = { workspace = true }
 hashbrown = { workspace = true }
+# Required by `#[simd]`, whose expansion refers to `fearless_simd` by name.
+fearless_simd = { workspace = true }
+fearless_simd_macros = { workspace = true }
 png = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 ordered-channel = { workspace = true, optional = true, features = ["crossbeam-channel"] }

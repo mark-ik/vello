@@ -665,10 +665,10 @@ mod tests {
         // Filter layer on the donor.
         use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
         let mut filtered = Scene::new(W, H);
-        filtered.push_filter_layer(Filter::from_primitive(FilterPrimitive::GaussianBlur {
-            std_deviation: 0.5,
-            edge_mode: EdgeMode::None,
-        }));
+        filtered.push_filter_layer(Filter::from_primitive(FilterPrimitive::gaussian_blur(
+            0.5,
+            EdgeMode::None,
+        )));
         filtered.set_paint(css::CRIMSON);
         filtered.fill_rect(&Rect::new(10.0, 10.0, 30.0, 30.0));
         filtered.pop_layer();

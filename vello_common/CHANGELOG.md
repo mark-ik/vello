@@ -12,6 +12,28 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 This release has an [MSRV][] of 1.89.
 
+## [0.4.0][] - 2026-11-11
+
+This release has an [MSRV][] of 1.89.
+
+### Added
+
+- `FilterPrimitive::GaussianBlur` blurs each axis by its own standard deviation (`std_deviation_x`, `std_deviation_y`), like SVG's `stdDeviation="x y"`; a blur along one axis only decimates and convolves that axis alone. `FilterPrimitive::gaussian_blur` builds a blur with the same deviation on both axes. ([#1997][] by [@theashraf][])
+- `RectU16::visible_scene_bounds` for the part of a scene that is visible in a target when the scene is placed at an offset. ([#2028][] by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: `FilterPrimitive::GaussianBlur`'s `std_deviation` is now `std_deviation_x` and `std_deviation_y`, `filter::gaussian_blur::GaussianBlur` carries a decimation plan and kernel per axis, and `DecimationSizer` scales the axes independently through `downscale_axes` and `upscale_axes`. ([#1997][] by [@theashraf][])
+- A blur under a non-uniform scale or skew is scaled per axis instead of by the average scale factor, so its device-space extent follows the transform. ([#1997][] by [@theashraf][])
+- Breaking change: `ImageSource::OpaqueId`, `ImageSource::opaque_id`, and `ImageSource::opaque_id_with_transparency_hint` have been replaced by the hidden `ImageSource::Atlas`, which is only used internally for glyph caching. `ImageResolver` is now hidden as well, and `NoOpImageResolver` has been removed. Use `ImageSource::Pixmap` or `ImageSource::external_texture` instead. ([#2061][] by [@LaurenzV][])
+- Breaking change: The re-exported `fearless_simd` has been updated to 1.0. ([#1987][] by [@LaurenzV][])
+- Breaking change: `RadialKind::Focal` holds a precomputed `FocalKind`, scale and bias instead of the full `FocalData`. ([#2003][] by [@LaurenzV][])
+- Drawing line-heavy content under a small clip is faster. ([#1954][] by [@AdrianEddy][])
+
+### Fixed
+
+- Cubics flattened far from the origin now match the same curve flattened near it. ([#2039][] by [@josefguenther][])
+
 ## [0.3.0][] - 2026-10-02
 
 This release has an [MSRV][] of 1.89.
@@ -262,14 +284,17 @@ This is the initial release. No changelog was kept for this release.
 
 See also the [vello_cpu 0.0.1](../vello_cpu/CHANGELOG.md#001---2025-05-10) release.
 
+[@AdrianEddy]: https://github.com/AdrianEddy
 [@b0nes164]: https://github.com/b0nes164
 [@conor-93]: https://github.com/conor-93
 [@dipeshbabu]: https://github.com/dipeshbabu
-[@DJMcNab]: https://github.com/waywardmonkeys
+[@DJMcNab]: https://github.com/DJMcNab
 [@grebmeg]: https://github.com/grebmeg
+[@josefguenther]: https://github.com/josefguenther
 [@LaurenzV]: https://github.com/LaurenzV
 [@nicoburns]: https://github.com/nicoburns
 [@taj-p]: https://github.com/taj-p
+[@theashraf]: https://github.com/theashraf
 [@tomcur]: https://github.com/tomcur
 [@tronical]: https://github.com/tronical
 [@upsuper]: https://github.com/upsuper
@@ -366,9 +391,17 @@ See also the [vello_cpu 0.0.1](../vello_cpu/CHANGELOG.md#001---2025-05-10) relea
 [#1930]: https://github.com/linebender/vello/pull/1930
 [#1932]: https://github.com/linebender/vello/pull/1932
 [#1949]: https://github.com/linebender/vello/pull/1949
+[#1954]: https://github.com/linebender/vello/pull/1954
 [#1962]: https://github.com/linebender/vello/pull/1962
+[#1987]: https://github.com/linebender/vello/pull/1987
+[#1997]: https://github.com/linebender/vello/pull/1997
+[#2003]: https://github.com/linebender/vello/pull/2003
+[#2028]: https://github.com/linebender/vello/pull/2028
+[#2039]: https://github.com/linebender/vello/pull/2039
+[#2061]: https://github.com/linebender/vello/pull/2061
 
-[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.3.0...HEAD
+[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.4.0...HEAD
+[0.4.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.3.0...sparse-strips-v0.4.0
 [0.3.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.2.0...sparse-strips-v0.3.0
 [0.2.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.1.0...sparse-strips-v0.2.0
 [0.1.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.0.9...sparse-strips-v0.1.0
