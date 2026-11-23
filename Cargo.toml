@@ -34,14 +34,8 @@ members = [
 ]
 
 [workspace.package]
-# Vello version, also used by other packages which want to mimic Vello's version.
-# Right now those packages include vello_encoding and vello_shaders.
-#
-# NOTE: When bumping this, remember to also bump the aforementioned other packages'
-#       version in the dependencies section at the bottom of this file.
-#       Additionally, bump the Vello dependency version in the 'simple' example.
+# Version inherited by the Sparse Strips examples. Classic crates are versioned separately.
 version = "0.11.0"
-
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files
 # and with the MSRV in the `Unreleased` section of research/CHANGELOG.md.
@@ -102,10 +96,11 @@ clippy.wildcard_dependencies = "warn"
 # END LINEBENDER LINT SET
 
 [workspace.dependencies]
-vello = { package = "netrender-vello", version = "0.11.0", path = "research/vello_research" }
-vello_encoding = { package = "netrender-vello-encoding", version = "0.11.0", path = "research/vello_encoding" }
-vello_shaders = { package = "netrender-vello-shaders", version = "0.11.0", path = "research/vello_shaders" }
+vello = { package = "netrender-vello", version = "0.12.0", path = "research/vello_research" }
+vello_encoding = { package = "netrender-vello-encoding", version = "0.12.0", path = "research/vello_encoding" }
+vello_shaders = { package = "netrender-vello-shaders", version = "0.12.0", path = "research/vello_shaders" }
 bytemuck = { version = "1.25.0", features = ["derive"] }
+# Sparse Strips 0.3 and Glifo 0.4 share this font stack. Classic declares Skrifa 0.49 separately.
 skrifa = { version = "0.44.0", default-features = false, features = ["autohint_shaping"] }
 # The version of kurbo used below should be kept in sync
 # with the version of kurbo used by peniko.

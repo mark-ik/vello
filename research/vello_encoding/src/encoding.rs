@@ -456,7 +456,11 @@ impl Encoding {
             })));
     }
 
-    // Encodes a blurred rounded rectangle brush.
+    /// Encodes a blurred rounded rectangle brush.
+    ///
+    /// Negative values of `std_dev` are treated as zero.
+    ///
+    /// When `invert` is `true`, the inverse (`1 - alpha`) of the blur coverage is painted.
     pub fn encode_blurred_rounded_rect(
         &mut self,
         color: impl Into<DrawColor>,
@@ -464,7 +468,14 @@ impl Encoding {
         height: f32,
         radius: f32,
         std_dev: f32,
+        invert: bool,
     ) {
+        // A standard deviation is a magnitude, so negative (and NaN) values are clamped to
+        // zero. That leaves the sign bit of the encoded `std_dev` free to carry the `invert`
+        // flag (see `DrawBlurRoundedRect::std_dev`). This also works for a standard deviation
+        // of zero, as `-0.0` has its sign bit set.
+        let sign = if invert { -1.0 } else { 1.0 };
+        let std_dev = std_dev.max(0.0).copysign(sign);
         self.draw_tags.push(DrawTag::BLUR_RECT);
         self.draw_data
             .extend_from_slice(bytemuck::cast_slice(bytemuck::bytes_of(
@@ -614,6 +625,27 @@ impl StreamOffsets {
 #[cfg(test)]
 mod tests {
     use peniko::{Extend, ImageQuality};
+
+    #[test]
+    fn blur_inversion_ignores_the_sign_of_zero_std_dev() {
+        for std_dev in [0.0, -0.0] {
+            for invert in [false, true] {
+                let mut encoding = super::Encoding::new();
+                encoding.encode_blurred_rounded_rect(
+                    peniko::Color::BLACK,
+                    12.0,
+                    8.0,
+                    1.0,
+                    std_dev,
+                    invert,
+                );
+                let draw: super::DrawBlurRoundedRect =
+                    bytemuck::pod_read_unaligned(bytemuck::cast_slice(&encoding.draw_data));
+                let expected = if invert { -0.0_f32 } else { 0.0_f32 };
+                assert_eq!(draw.std_dev.to_bits(), expected.to_bits());
+            }
+        }
+    }
 
     #[test]
     fn ensure_image_quality_values() {

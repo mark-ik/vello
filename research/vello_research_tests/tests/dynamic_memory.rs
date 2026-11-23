@@ -4,16 +4,16 @@
 //! A scene that outgrows the fixed dynamic buffers.
 //!
 //! The coarse pass sizes its bump-allocated buffers from a fixed table. A scene
-//! that needs more renders nothing and reports no error. The renderer reads the
-//! GPU's bump counters back after each frame and sizes later frames to what the
-//! scene needed. Recovery takes as long as the asynchronous readback needs.
+//! that outgrows those buffers must be refused after the GPU counters arrive.
+//! A later submission can use the counts from that refusal to grow the buffers.
 
-use vello::Scene;
 use vello::kurbo::{Affine, Line, Stroke};
 use vello::peniko::color::palette;
+use vello::{Error, Scene};
 use vello_research_tests::TestParams;
 
 const SIZE: u32 = 1024;
+const TILE_ALLOCATION_FAILED: u32 = 0x2;
 
 /// Red pixels in an RGBA8 image, against the black base.
 fn red_pixels(image: &vello::peniko::ImageData) -> usize {
@@ -43,14 +43,24 @@ fn a_scene_past_the_tile_table_recovers_after_readback() {
         );
     }
     let params = TestParams::new("a_scene_past_the_tile_table", SIZE, SIZE);
-    let frames = vello_research_tests::get_scene_images_sync(&params, &scene, 3).unwrap();
-    assert_eq!(
-        red_pixels(&frames[0]),
+    let frames =
+        vello_research_tests::get_scene_allocation_attempts_sync(&params, &scene, 3).unwrap();
+    let Err(Error::AllocationShortfall {
+        needed,
+        line_binding_exceeded: false,
+        ..
+    }) = &frames[0]
+    else {
+        panic!("the first frame should be refused for tile capacity");
+    };
+    assert_ne!(
+        needed.failed & TILE_ALLOCATION_FAILED,
         0,
-        "the first frame must overflow the fixed table, or this test proves nothing"
+        "tile allocation must have failed"
     );
+    let recovered = frames[2].as_ref().expect("the third frame should qualify");
     assert!(
-        red_pixels(&frames[2]) > 0,
-        "the renderer sized the third frame from the first frame's counters"
+        red_pixels(recovered) > 0,
+        "the renderer sized the third frame from earlier counters"
     );
 }

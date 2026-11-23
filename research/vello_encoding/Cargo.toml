@@ -1,7 +1,7 @@
 [package]
 name = "netrender-vello-encoding"
-version.workspace = true # We mimic Vello's version
-description = "Netrender's Vello 0.11 encoding types for wgpu 30: the data that needs to be rendered, with device-pixel curve quality bounds. Library name `vello_encoding`."
+version = "0.12.0"
+description = "Netrender's Vello 0.12 encoding types for wgpu 30: the data that needs to be rendered, with device-pixel curve quality bounds. Library name `vello_encoding`."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
@@ -29,7 +29,7 @@ workspace = true
 
 [dependencies]
 bytemuck = { workspace = true }
-skrifa = { workspace = true, features = ["std"] }
+skrifa = { version = "0.49.0", default-features = false, features = ["autohint_shaping", "std"] }
 peniko = { workspace = true, default-features = true }
 guillotiere = { workspace = true, features = ["std"] }
 smallvec = { workspace = true }

@@ -75,7 +75,11 @@ impl Layout {
     pub fn draw_tags<'a>(&self, data: &'a [u8]) -> &'a [DrawTag] {
         let start = self.draw_tag_base as usize * 4;
         let end = self.draw_data_base as usize * 4;
-        bytemuck::cast_slice(&data[start..end])
+        let tags = &data[start..end];
+        if tags.is_empty() {
+            return &[];
+        }
+        bytemuck::cast_slice(tags)
     }
 
     /// Returns the draw data stream.

@@ -88,7 +88,7 @@ pub fn render_then_debug_sync(scene: &Scene, params: &TestParams) -> Result<Imag
 pub async fn render_then_debug(scene: &Scene, params: &TestParams) -> Result<ImageData> {
     let image = get_scene_image(params, scene).await?;
     let suffix = if params.use_cpu { "cpu" } else { "gpu" };
-    let name = format!("{}_{suffix}", &params.name);
+    let name = format!("{}_{suffix}", params.name);
     let out_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("debug_outputs")
         .join(name)
@@ -148,6 +148,29 @@ pub async fn get_scene_sequence_images(
     params: &TestParams,
     scenes: &[&Scene],
 ) -> Result<Vec<ImageData>, anyhow::Error> {
+    render_scene_sequence(params, scenes, false)
+        .await?
+        .into_iter()
+        .map(|frame| {
+            frame.map_err(|error| anyhow::anyhow!("Curve quality readback refused: {error:?}"))
+        })
+        .collect()
+}
+
+/// Render a scene repeatedly, keeping allocation refusals as typed frame results.
+pub fn get_scene_allocation_attempts_sync(
+    params: &TestParams,
+    scene: &Scene,
+    frames: usize,
+) -> Result<Vec<Result<ImageData, vello::Error>>, anyhow::Error> {
+    pollster::block_on(render_scene_sequence(params, &vec![scene; frames], true))
+}
+
+async fn render_scene_sequence(
+    params: &TestParams,
+    scenes: &[&Scene],
+    keep_allocation_shortfalls: bool,
+) -> Result<Vec<Result<ImageData, vello::Error>>, anyhow::Error> {
     let (device, queue) = &*WGPU_DEVICE_QUEUE;
     let mut renderer = vello::Renderer::new(
         device,
@@ -191,14 +214,17 @@ pub async fn get_scene_sequence_images(
         let image = read_target(device, queue, &target, width, height)?;
         // This helper's own bounded copy completed the preceding producer render.
         // Observe its deferred quality result before publishing any image/receipt.
-        renderer
-            .poll_curve_quality(device)
-            .or_else(|error| bail!("Curve quality readback refused: {error:?}"))?;
+        let quality = renderer.poll_curve_quality(device);
+        match &quality {
+            Ok(()) => {}
+            Err(vello::Error::AllocationShortfall { .. }) if keep_allocation_shortfalls => {}
+            Err(error) => bail!("Curve quality readback refused: {error:?}"),
+        }
         anyhow::ensure!(
             renderer.pending_curve_quality() == (0, 0),
             "Completed bounded readback left unobserved curve quality counters"
         );
-        images.push(image);
+        images.push(quality.map(|()| image));
     }
     Ok(images)
 }

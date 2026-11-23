@@ -1,7 +1,7 @@
 [package]
 name = "netrender-vello"
-version = "0.11.1"
-description = "Netrender's Vello 0.11 research renderer compatibility build for wgpu 30."
+version = "0.12.0"
+description = "Netrender's Vello 0.12 research renderer compatibility build for wgpu 30."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
@@ -51,7 +51,7 @@ workspace = true
 vello_encoding = { workspace = true }
 vello_shaders = { workspace = true, optional = true }
 bytemuck = { workspace = true }
-skrifa = { workspace = true, features = ["std"] }
+skrifa = { version = "0.49.0", default-features = false, features = ["autohint_shaping", "std"] }
 peniko = { workspace = true, default-features = true }
 wgpu = { workspace = true, default-features = false, optional = true }
 log = { workspace = true }
