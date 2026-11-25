@@ -99,11 +99,11 @@ clippy.wildcard_dependencies = "warn"
 # END LINEBENDER LINT SET
 
 [workspace.dependencies]
-vello = { package = "netrender-vello", version = "0.12.0", path = "research/vello_research" }
-vello_encoding = { package = "netrender-vello-encoding", version = "0.12.0", path = "research/vello_encoding" }
+vello = { package = "netrender-vello", version = "0.12.1", path = "research/vello_research" }
+vello_encoding = { package = "netrender-vello-encoding", version = "0.12.1", path = "research/vello_encoding" }
 vello_shaders = { package = "netrender-vello-shaders", version = "0.12.0", path = "research/vello_shaders" }
 bytemuck = { version = "1.25.0", features = ["derive"] }
-skrifa = { version = "0.49.0", default-features = false, features = ["autohint_shaping"] }
+skrifa = { version = ">=0.49", default-features = false, features = ["autohint_shaping"] }
 # The version of kurbo used below should be kept in sync
 # with the version of kurbo used by peniko.
 peniko = { version = "0.6.1", default-features = false }
@@ -138,7 +138,7 @@ vello_common = { package = "netrender-sparse", version = "0.4.0", path = "vello_
 vello_cpu = { package = "netrender-cpu", version = "0.4.0", path = "vello_cpu" }
 vello_gpu = { package = "netrender-gpu", version = "0.4.0", path = "vello_gpu", default-features = false }
 vello_gpu_shaders = { package = "netrender-wesl", version = "0.4.0", path = "vello_gpu_shaders", default-features = false }
-glifo = { package = "netrender-glifo", version = "0.5.0", path = "glifo", default-features = false }
+glifo = { package = "netrender-glifo", version = "0.5.1", path = "glifo", default-features = false }
 vello_example_scenes = { path = "vello_tests/vello_example_scenes" }
 vello_dev_macros = { path = "vello_tests/vello_dev_macros" }
 vello_test_support = { path = "vello_tests/test_support" }
